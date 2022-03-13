@@ -8,16 +8,16 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.13.7
 #   kernelspec:
-#     display_name: Python 3.9.5 ('composlang-iD_d0IlX-py3.9')
+#     display_name: composlang
 #     language: python
-#     name: python395jvsc74a57bd04712f51a2b6565feb4b6c838cc733f8f7925e6eb21082244c1212b918115d3b9
+#     name: composlang
 # ---
 
 # %% [markdown]
 # # Compos-Lang
 # ## How compositional is language?
 
-# %%
+# %% tags=[]
 from pathlib import Path
 from collections import defaultdict, Counter
 
@@ -30,184 +30,81 @@ from tqdm.notebook import tqdm
 # %%
 # %load_ext autoreload
 # %autoreload 2
-from corpus import Corpus
+from corpus import Corpus, plot_rank_freq_distribution
 
 # %% [markdown]
-# ## Load an example COCA file 
+# ## Initialize a Corpus object to read COCA 
 
 # %%
-coca = Corpus('COCA')
-
-# %%
-sents = [*coca.read(10_000)]
-
-# %%
-len(sents)
+coca = Corpus('COCA_explore', n_sentences=500, store=False)
+child = 'ADJ'
+parent = 'NOUN'
+len(coca)
 
 # %% [markdown]
-# ## Look at some token pairs of interest (ADJ, NOUN)
+# ## Look at some summary stats
 
 # %%
-for s in tqdm(sents[:10]):
-    for a, n, s.text in get_pairs(s, 'ADJ', 'NOUN'):
-        print(f'{a.text:<16} {n.text:<16}')
-    if s.text:
-        print(f'\t{s.text}')
-        print('-'*79)
+combos_obs = len(list(coca.extract_upos_pairs(child, parent)))
 
-# %% [markdown]
-# ## Now, let's collect all pairs in a mapping:
-#
-# - noun -> set of adjectives that modify it
-# - adj -> set of nouns that modify it
+upos_counts = coca.upos_counts(unique=False)
+print(f'Total {child} occurrences observed: {upos_counts[child]}\n'
+      f'Total {parent} occurrences observed: {upos_counts[parent]}')
 
-# %%
-noun_to_adj = defaultdict(set)
-adj_to_noun = defaultdict(set)
+upos_counts = coca.upos_counts(unique=True)
+print(f'Unique {child} instances observed: {upos_counts[child]}\n'
+      f'Unique {parent} instances observed: {upos_counts[parent]}')
+combos_possible = (upos_counts[child] * upos_counts[parent])
 
-for s in tqdm(sents):
-    for a, n, s.text in get_pairs(s, 'ADJ', 'NOUN'):
-        noun_to_adj[n.text].add((a.text, s.text))
-        adj_to_noun[a.text].add((n.text, s.text))
-
-
-# %% [markdown]
-# ## The structure above stores the unique contexts of each as well, but we want to condense this information into counts
-
-# %%
-def count_mappings(d):
-    '''
-    returns the total mappings 
-    (including re-occurrence in multiple contexts)
-    as well as the total unique mappings 
-    '''
-    num_mappings = defaultdict(int)
-    num_unique_mappings = defaultdict(int)
-    
-    for key in d:
-        unique_mappings = {val for val, context in d[key]}
-        num_unique_mappings[key] = len(unique_mappings)
-        num_mappings[key] = len(d[key])
-    
-    return dict(total=num_mappings, unique=num_unique_mappings)
-
-
-# %%
-unique_noun_to_adj = count_mappings(noun_to_adj)['unique']
-total_noun_to_adj = count_mappings(noun_to_adj)['total']
-
-unique_adj_to_noun = count_mappings(adj_to_noun)['unique']
-total_adj_to_noun = count_mappings(adj_to_noun)['total']
+print(f'Total {child}-{parent} possible: {combos_possible:.1e}. Total {child}-{parent} combos observed: {combos_obs:.1e}'
+      f'\nRealized fraction: {combos_obs/combos_possible:.2e}')
 
 # %% tags=[]
-noun_combos = np.array(sorted(unique_noun_to_adj.values(), key=lambda t:-t))
-adj_combos = np.array(sorted(unique_adj_to_noun.values(), key=lambda t:-t))
+from pyvis.network import Network
+# # import networkx as nx
 
-noun_combos_labels = np.array(sorted(unique_noun_to_adj.keys(), key=lambda t:-unique_noun_to_adj[t]))
-adj_combos_labels = np.array(sorted(unique_adj_to_noun.keys(), key=lambda t:-unique_adj_to_noun[t]))
+wg = coca.generate_graph([child, parent])
+nt = Network(notebook=True)
+# # # populates the nodes and edges data structures
+nt.from_nx(wg.g)
+# # pos = nx.circular_layout(wg.g)
 
-
-# %%
-def plot_from_combo_map(noun_combos, adj_combos, 
-                        noun_combos_labels, adj_combos_labels):
-
-    fig, ax = plt.subplots(2,2, figsize=(18,10))
-
-    def plot_comparisons(candidate, axes):
-        np.random.seed(1)
-        #### ZIPFs for comparison
-        for a in np.arange(1.5, 2.5, .1):
-            z = np.sort(np.random.zipf(a, (len(candidate,))))[::-1]
-            # z = z[z <= max(candidate)+10]
-            axes.plot(z, '--', label=f'Zipf (a={a:.2f})')
-        # #### EXP for comparison
-        # alpha = 10+np.median(candidate)/np.log(2)
-        # exp = np.sort(1+np.random.exponential(alpha, (len(candidate),)))[::-1]
-        # axes.plot(exp, '--', label=f'Exp({alpha:.2f})')
-
-
-
-    ####################
-    #### TOP LEFT
-    ####################
-    ax[0,0].plot(noun_combos, 'b.', label='NOUN compos.', 
-                 linewidth=5, alpha=.7, )
-
-    plot_comparisons(noun_combos, ax[0,0])
-
-    ax[0,0].set(xlabel='NOUN compositionality rank',
-                ylabel='#ADJs that combine with NOUN',
-                yscale='log')
-    ax[0,0].set_ylim([.9, max(noun_combos)+10])
-    
-    ulim = np.ceil(np.log(noun_combos[0])/np.log(2))+1
-    ax[0,0].set_yticks(2**np.arange(ulim), 2**np.arange(ulim))
-
-    noun_xticks = [*np.arange(1, len(noun_combos), 1_000)]
-    ax[0,0].set_xticks(noun_xticks,
-                       labels=[f'{a}\n{b:.0e}' for a,b in zip(noun_combos_labels[noun_xticks], noun_xticks)],
-                       rotation=60)
-    ax[0,0].legend()
-
-
-    ####################
-    #### TOP RIGHT
-    ####################
-    ax[0,1].plot(noun_combos, 'b.',  label='NOUN compos.', 
-                 linewidth=5, alpha=.7,  )
-
-    plot_comparisons(noun_combos, ax[0,1])
-
-    ax[0,1].set(xlabel='NOUN compositionality rank\n(log scale)',
-                ylabel='#ADJs that combine with NOUN\n(log scale)',
-                xscale='log', yscale='log')
-    ax[0,1].set_ylim([.9, max(noun_combos)+10])
-
-    ulim = np.ceil(np.log(noun_combos[0])/np.log(2))+1
-    ax[0,1].set_yticks(2**np.arange(ulim), 2**np.arange(ulim))
-    log_noun_xticks = [*2**np.arange(8)] + [*np.arange(2**8, len(noun_combos), 2_300)]
-    ax[0,1].set_xticks(log_noun_xticks,
-                       labels=[f'{a}\n{b:.0e}' for a,b in zip(noun_combos_labels[log_noun_xticks], log_noun_xticks)],
-                       rotation=60)
-
-
-    ax[0,1].legend()
-
-
-
-    ####################
-    #### BOTTOM LEFT
-    ####################
-    ax[1,0].plot(adj_combos, 'r-', label='ADJ compos.',
-                 linewidth=5, alpha=.7,)
-    ax[1,0].set_yticks(np.arange(0, max(adj_combos)+10, max(adj_combos)//10))
-    ax[1,0].set(xlabel='ADJ compositionality rank',
-                ylabel='#NOUNs that combine with ADJ')
-
-    plot_comparisons(adj_combos, ax[1,0])
-    ax[1,0].legend()
-
-
-
-    ####################
-    #### BOTTOM RIGHT
-    ####################
-    ax[1,1].plot(adj_combos, 'r-', label='ADJ compos.',
-                 linewidth=5, alpha=.7,)
-    ax[1,1].set(xlabel='ADJ compositionality rank\n(log scale)',
-                ylabel='#NOUNs that combine with ADJ\n(log scale)',
-                xscale='log', yscale='log')
-
-    plot_comparisons(adj_combos, ax[1,1])
-    ax[1,1].legend()
-
-    return fig, ax
+nt.show('nx.html')
+# # nx.draw_circular(wg.g)
 
 # %%
-f,a = plot_from_combo_map(noun_combos, 
-                          adj_combos, 
-                          noun_combos_labels, 
-                          adj_combos_labels)
+i = 0
+for a, n, *s in coca.extract_upos_pairs(child, parent, include_context=True):
+    i += 1
+    print(f'{a.text:<16} {n.text:<16}')
+    if s: print(f'\t{" ".join(w.text for w in s[0])}')
+    print('-'*79)
+    if i >= 7: break
 
-plt.tight_layout()
+# %% tags=[]
+child_combos, child_labels, parent_combos, parent_labels = coca.extract_combinations(child, parent, threshold=0)
+child_combos_any, child_labels_any, _, _ = coca.extract_combinations(child, '*', threshold=0)
+_, _, parent_combos_any, parent_labels_any = coca.extract_combinations('*', parent, threshold=0)
+
+print(f"# {parent} appearing in combination as {child}-{parent}: {len(parent_combos)}, "
+      f"# {parent} appearing in total: {coca.upos_counts(unique=True)[parent]}, ratio: "
+      f"{len(parent_combos)/coca.upos_counts(unique=True)[parent]:.2f}")
+print(f"# {parent} appearing in combination as {'*'}-{parent}: {len(parent_combos_any)}, "
+      f"# {parent} appearing in total: {coca.upos_counts(unique=True)[parent]}, ratio: "
+      f"{len(parent_combos_any)/coca.upos_counts(unique=True)[parent]:.2f}")
+
+print()
+
+print(f"# {child} appearing in combination as {child}-{parent}: {len(child_combos)}, "
+      f"# {child} appearing in total: {coca.upos_counts(unique=True)[child]}, ratio: "
+      f"{len(child_combos)/coca.upos_counts(unique=True)[child]:.2f}")
+print(f"# {child} appearing in combination as {child}-{'*'}: {len(child_combos_any)}, "
+      f"# {child} appearing in total: {coca.upos_counts(unique=True)[child]}, ratio: "
+      f"{len(child_combos_any)/coca.upos_counts(unique=True)[child]:.2f}")
+
+# %%
+f_parent, (left_parent, right_parent) = plot_rank_freq_distribution(parent_combos, parent_labels, parent)
+f_child, (left_child, right_child) = plot_rank_freq_distribution(child_combos, child_labels, child)
+
+# plt.tight_layout()
 plt.show()
