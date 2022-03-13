@@ -7,25 +7,48 @@ import fileinput
 import pydoc
 import itertools
 import random
+from sys import stderr
+import typing
+from dataclasses import dataclass
+from functools import lru_cache
 
 # installed geenric modules
 from more_itertools import peekable
 from tqdm import tqdm
+from matplotlib import pyplot as plt
+import numpy as np
 
 # installed specialized modules
 import stanza
 from stanza.models.common.doc import Document
 
+# local modules
+from wordmatrix import WordGraph
 
 
 def log(*things, **more_things):
     '''
     placeholder logging method to be changed later
     '''
-    print('** info:', *things, **more_things)
+    print('** info:', *things, **more_things,
+          file=stderr
+         )
 
     
+@dataclass
+class Word:
+    text: str = None
+    upos: str = None
+    # head: Word = None
     
+    def __hash__(self):
+        return hash((self.text, self.upos))
+    def __str__(self):
+        return self.text
+    def __repr__(self):
+        return f'{self.text} ({self.upos})'
+
+
 class Corpus:
     '''
     A class to read and process data from a corpus in one place;
@@ -35,14 +58,16 @@ class Corpus:
     The only restriction is that a `sentence_id` column is required in order
     to detect sentence boundaries.
     '''
+    
     _fmt = None
-    _parsed = None
+    _parsed = True
     _files = None
     _upos_token_stats = None # UPOS -> token -> num_occurrences
     _pair_stats = None # ((token1, upos1), (token2, upos2)) -> num_occerrences 
                         # (in a child-parent relation in a dependency parse)
     _sentences_seen = 0
     _parsed_sentences = None
+    
     
     def __init__(self, 
                  directory_or_filelist: typing.Union[Path, str, 
@@ -65,9 +90,9 @@ class Corpus:
         self._store = store # whether to store read sentences in memory 
                             # (if False, read() does file I/O each time)
         self._parsed_sentences = []
-        
         if parsed: self._parsed = parsed
-        else: self.depparse()
+        else: raise ValueError('must provide depparsed input')
+        
         
         def _pathify(fpth: typing.Union[Path, str, typing.Any]):
             '''returns a resolved `Path` object'''
@@ -88,40 +113,7 @@ class Corpus:
         random.shuffle(self._files)
     
         
-    def depparse(self, *args, **kwargs):
-        '''
-        Runs the stanza pipeline for dependency parsing the input. 
-        '''
-        raise NotImplementedError('currently only depparsed corpora are supported. '
-                                  'please refer to stanfordnlp.github.io/stanza/depparse.html '
-                                  'and make sure you start with a parsed corpus as input.')
-    
-    
-    def get_upos_counts(self, unique: bool = False):
-        '''
-        get counts of the number of occurrences of each upos.
-        optionally, if unique=True, consider each token as one occurrence
-        '''
-        if unique:
-            return {upos: len(self._upos_token_stats[upos].values()) 
-                for upos in self._upos_token_stats}
-        return {upos: sum(self._upos_token_stats[upos].values()) 
-                for upos in self._upos_token_stats}
-    
-    
-    def get_token_counts(self, upos: typing.Iterable = ()):
-        '''
-        get the total number of occurrences of each token,
-        restricted to the given uposes (optional), or all uposes available
-        '''
-        uposes = set(self._upos_token_stats.keys())
-        if upos: 
-            uposes.intersection_update(set(upos))
-        
-        return {token: sum(self._upos_token_stats[upos][token] for upos in uposes)}
-    
-    
-    def read(self) -> Document:
+    def read(self, return_sentences=True) -> Document:
         '''
         Reads a parsed corpus file, up to n_sentences in total
         the corpus file is formatted similar to depparse output produced by 
@@ -173,7 +165,7 @@ class Corpus:
                 total = sum(1 for _ in f)
         else:
             total = n_sentences
-        with fileinput.input(files=self._files) as f, tqdm(total=total) as T:
+        with fileinput.input(files=self._files) as f, tqdm(total=total, leave=False) as T:
             # more_itertools.peekable allows seeing future context without using up item from iterator
             f = peekable(f)
 
@@ -213,17 +205,17 @@ class Corpus:
                     self._sentences_seen += 1
                     if total < float('inf'): T.update(1)
                     
-                    if store: 
+                    if self._store: 
                         self._parsed_sentences.append(sent)
-                    yield sent
+                    if return_sentences:
+                        yield sent
 
                 if self._sentences_seen >= n_sentences:
                     break
 
             log(f'finished processing after seeing {self._sentences_seen} sentences.')
-    
-                    
-    
+
+
     @classmethod
     def segment_line(cls, line: str, sep:str, fmt:typing.Iterable[str]) -> dict:
         '''
@@ -250,19 +242,32 @@ class Corpus:
         return doc
 
     
+    def __len__(self):
+        return self._n_sentences
+    
+    
     @classmethod
-    def _extract_edges(cls, sentence: stanza.models.common.doc.Sentence):
+    def _extract_edges(cls, sentence: stanza.models.common.doc.Sentence) -> (Word, Word):
         for w in sentence.words:
             # if w is root, it has no head, so skip
             if w.head == 0:
                 continue
             p = sentence.words[w.head-1]
-            yield (w.text, w.upos), (p.text, p.upos)
+            yield Word(w.text, w.upos), Word(p.text, p.upos)
+    
+        
+    def extract_upos_pair_counts(self, threshold: int = 2):
+        '''
+        '''
+        if len(self._pair_stats) == 0:
+            list(self.extract_edges(threshold=2))
+        return self._pair_stats
     
     
     def extract_edges(self,
                       sentences: typing.Iterable[stanza.models.common.doc.Sentence] = None,
-                      update_stats: bool = True):
+                      update_stats: bool = True,
+                      threshold: int = 2):
         '''
         extract edges (all head-relations) from either the given sentences,
         or if no sentences are given, read sentences from the Corpus.
@@ -278,9 +283,35 @@ class Corpus:
             update_stats [bool]: whether the stateful pair-occurrence stats should
                 be updated for this instance of Corpus
         '''
-        for sentence in self.read():
-            for (w,wupos), (p,pupos) in Corpus._extract_edges(sentence):
-                if update_stats:
+        if len(self._pair_stats) > 0:
+            for w, p in self._pair_stats:
+                for i in range(self._pair_stats[w, p]):
+                    yield w, p
+        else:
+            for sentence in self.read():
+                for w, p in Corpus._extract_edges(sentence):
+                    
+                    # don't store stats for very low frequency words
+                    if w not in self.prune_tokens(threshold=threshold): continue
+                    if p not in self.prune_tokens(threshold=threshold): continue
+                    
+                    if update_stats:
+                        self._pair_stats[w,p] += 1
+                        
+                    yield w, p
+    
+    
+    def generate_graph(self, upos: typing.Iterable = (),
+                       threshold: int = 2) -> 'nx.Graph':
+        '''
+        '''
+        uposes = set(self._upos_token_stats)
+        if upos: 
+            uposes.intersection_update(set(upos))
+        
+        wg = WordGraph(((w,p) for w,p in self.extract_edges(threshold=threshold) 
+                        if w.upos in uposes and p.upos in uposes))
+        return wg
     
     
     @classmethod
@@ -300,21 +331,180 @@ class Corpus:
                     # whether the context this pair appeared in should be returned
                     # by default this is false so as not to explode memory usage
                     if include_context:
-                        yield w, p, sentence.words
+                        yield Word(w.text,w.upos), Word(p.text,p.upos), sentence.words
                     else:
-                        yield w, p
+                        yield Word(w.text,w.upos), Word(p.text,p.upos)
 
                         
     def extract_upos_pairs(self,
-                           child_upos='ADJ', 
-                           parent_upos='NOUN',
-                           n_sentences: float = float('inf'),
+                           child_upos, 
+                           parent_upos,
                            include_context=False):
         '''
         Extract pairs of certain UPOSes from the sentences
         '''
-        for sentence in self.read(n_sentences=n_sentences):
+        for sentence in self.read():
             yield from Corpus._extract_upos_pairs(sentence,
                                                   child_upos=child_upos, 
                                                   parent_upos=parent_upos, 
                                                   include_context=include_context)
+    
+    
+    def upos_counts(self, unique: bool = False):
+        '''
+        get counts of the number of occurrences of each upos.
+        optionally, if unique=True, consider each token as one occurrence
+        '''
+        if unique:
+            return {upos: len(self._upos_token_stats[upos].values()) 
+                    for upos in self._upos_token_stats}
+        return {upos: sum(self._upos_token_stats[upos].values()) 
+                for upos in self._upos_token_stats}
+    
+
+    def token_counts(self, upos: typing.Iterable = ()):
+        '''
+        get the total number of occurrences of each token,
+        restricted to the given uposes (optional), or all uposes available
+        '''
+        uposes = set(self._upos_token_stats)
+        if upos: 
+            uposes.intersection_update(set(upos))
+        
+        return {token: sum(self._upos_token_stats[upos][token] 
+                           if token in self._upos_token_stats[upos] 
+                           else 0 
+                           for upos in uposes)
+                for token in (t for u in uposes 
+                                for t in self._upos_token_stats[u])}
+        
+    
+    @lru_cache(maxsize=1)
+    def prune_tokens(self, threshold=2):
+        '''
+        '''
+        # get token counts across all UPOS
+        token_counts = self.token_counts(upos=())
+        # filter tokens that occur at least `threshold` number of times
+        tokens_to_keep = {t for t in token_counts if token_counts[t] >= threshold}
+        return tokens_to_keep
+
+    
+    def extract_combinations(self,
+                             child_upos, parent_upos,
+                             threshold: int = 2,
+                             ) -> typing.Iterable[np.array]:        
+        
+        child_to_parent = defaultdict(int)
+        parent_to_child = defaultdict(int)
+        
+        for (w,p) in self.extract_upos_pair_counts(threshold=threshold):
+            if (child_upos == '*' or w.upos == child_upos) and (parent_upos == '*' or p.upos == parent_upos):
+                child_to_parent[w] += 1
+                parent_to_child[p] += 1
+                                                   
+        child_to_parent_arr = np.array(sorted(child_to_parent.values(), key=lambda c:-c))
+        parent_to_child_arr = np.array(sorted(parent_to_child.values(), key=lambda c:-c))
+        
+        child_to_parent_labels = np.array(sorted(child_to_parent.keys(), key=lambda k:-child_to_parent[k]))
+        parent_to_child_labels = np.array(sorted(parent_to_child.keys(), key=lambda k:-parent_to_child[k]))
+        
+#         # filter by minimum no. of occurrences
+#         child_mask = child_to_parent_arr >= threshold
+#         parent_mask = parent_to_child_arr >= threshold
+        
+#         child_to_parent_arr = child_to_parent_arr[child_mask]
+#         child_to_parent_labels = child_to_parent_labels[child_mask]
+        
+#         parent_to_child_arr = parent_to_child_arr[parent_mask]
+#         parent_to_child_labels = parent_to_child_labels[parent_mask]
+        
+        return child_to_parent_arr, child_to_parent_labels, parent_to_child_arr, parent_to_child_labels
+    
+    
+    
+def fit_zipf(freq):
+    
+    from scipy.stats import linregress
+    
+    logfreq = np.log(np.sort(freq)[::-1])
+    logrank = np.log(np.arange(1, len(freq)+1, 1))
+    
+    res = linregress(logrank, logfreq)
+    return np.exp(res.intercept + res.slope*logrank), res
+    
+    
+    
+def plot_rank_freq_distribution(ranked_freq, labels, upos):
+
+    fig, (left, right) = plt.subplots(1,2, figsize=(20,5))
+
+    def plot_comparisons(candidate, axes):
+        
+        fitted, res = fit_zipf(candidate)
+        axes.plot(fitted, '-', label=f'fitted using linregress\n$r={res.rvalue:.2f},p={res.pvalue:.2f}$')
+        # axes.fill_between(np.arange(1, len(fitted)+1),
+        #                   np.exp(np.log(fitted)-res.stderr), np.exp(np.log(fitted)+res.stderr),
+        #                   color='gray', alpha=0.2)
+        np.random.seed(1)
+        #### ZIPFs for comparison
+        for a in np.arange(1.5, 3, .3):
+            z = np.sort(np.random.zipf(a, (len(candidate,))))[::-1]
+            # z = z[z <= max(candidate)+10]
+            axes.plot(z, '--', label=f'draw from Zipf (a={a:.2f})')
+        # #### EXP for comparison
+        # alpha = 10+np.median(candidate)/np.log(2)
+        # exp = np.sort(1+np.random.exponential(alpha, (len(candidate),)))[::-1]
+        # axes.plot(exp, '--', label=f'Exp({alpha:.2f})')
+
+
+    ####################
+    #### LEFT
+    ####################
+    left.plot(ranked_freq, 'b.' if upos in ('NOUN', 'VERB') else 'r.', label=f'{upos} compos.', 
+                 linewidth=5, alpha=.7, )
+
+    plot_comparisons(ranked_freq, left)
+
+    left.set(xlabel=f'{upos} compositionality rank',
+                ylabel=f'# lexical that combine with {upos}',
+                yscale='log')
+    left.set_ylim([.9, max(ranked_freq)+10])
+    
+    ulim = np.ceil(np.log(ranked_freq[0])/np.log(2))+1
+    ulim = int(ulim)
+    left.set_yticks(2**np.arange(ulim), 2**np.arange(ulim))
+
+    xticks = [*np.arange(1, len(ranked_freq), len(ranked_freq)//10)]
+    # log(xticks)
+    left.set_xticks(xticks,
+                    labels=[f'{a}\n{b:.0e}' for a,b in zip(labels[xticks], xticks)],
+                    rotation=60)
+    left.legend()
+
+
+    ####################
+    #### RIGHT
+    ####################
+    right.plot(ranked_freq, 'b.' if upos in ('NOUN', 'VERB') else 'r.',  label=f'{upos} compos.', 
+                 linewidth=5, alpha=.7,  )
+
+    plot_comparisons(ranked_freq, right)
+
+    right.set(xlabel=f'{upos} compositionality rank\n(log scale)',
+                ylabel=f'# lexical items that combine with {upos}\n(log scale)',
+                xscale='log', yscale='log')
+    right.set_ylim([.9, max(ranked_freq)+10])
+
+    ulim = np.ceil(np.log(ranked_freq[0])/np.log(2))+1
+    ulim = int(ulim)
+    right.set_yticks(2**np.arange(ulim), 2**np.arange(ulim))
+    
+    xticks = [*2**np.arange(ulim)] + [*np.arange(2**ulim, len(ranked_freq), (len(ranked_freq)-2**ulim)//3)]
+    # log(xticks)
+    right.set_xticks(xticks,
+                     labels=[f'{a}\n{b:.0e}' for a,b in zip(labels[xticks], xticks)],
+                     rotation=60)
+    right.legend()
+
+    return fig, (left, right)
