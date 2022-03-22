@@ -126,10 +126,8 @@ class Corpus:
             self._files = list(map(_pathify, directory_or_filelist))
         
         self._files = sorted(self._files)
-        try:
-            self.from_cache()
-        except ValueError as e:
-            raise
+        self.from_cache(allow_empty=True)
+        
 
 
     def _get_cache(self, prefix, tag=None):
@@ -148,19 +146,24 @@ class Corpus:
     _attrs_to_cache = ('_sentences_seen', '_lines_read', '_pair_stats',
                        '_token_stats', '_files', '_first_run', '_total')
 
-    def from_cache(self, prefix=None, tag: str = None):
+    def from_cache(self, prefix=None, tag: str = None, allow_empty: bool = False):
         '''
         recover core data of this instance to the cache under the directory `prefix/tag`
         '''
         prefix = prefix or self._cache_dir
         tag = tag or self._cache_tag
 
-        c = self._get_cache(prefix, tag)        
-        log(f'loading from cache at {c.directory}')
-        for attr in self._attrs_to_cache:
-            obj = c[attr]
-            setattr(self, attr, obj)
-
+        try:
+            c = self._get_cache(prefix, tag)        
+            log(f'attempt loading from cache at {c.directory}')
+            for attr in self._attrs_to_cache:
+                obj = c[attr]
+                setattr(self, attr, obj)
+        except KeyError as e:
+            if allow_empty:
+                pass
+            else:
+                raise e
 
     def to_cache(self, prefix=None, tag: str = None):
         '''
@@ -175,7 +178,7 @@ class Corpus:
             obj = getattr(self, attr)
             c[attr] = obj
         
-    def read(self, return_sentences=False, cache_every=100) -> Document:
+    def read(self, return_sentences=False, cache_every=1_000) -> Document:
         '''
         Reads a parsed corpus file, up to n_sentences in total
         the corpus file is formatted similar to depparse output produced by 
