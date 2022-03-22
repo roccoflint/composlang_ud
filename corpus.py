@@ -1,7 +1,7 @@
 
 # stdlib modules
 from pathlib import Path
-from collections import defaultdict
+from collections import abc, defaultdict
 import typing
 import fileinput
 import pydoc
@@ -9,16 +9,17 @@ import itertools
 import random
 from sys import stderr
 import typing
+from hashlib import shake_128
 from dataclasses import dataclass
-from functools import lru_cache
 
 # installed geenric modules
+from methodtools import lru_cache
 from more_itertools import peekable
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import numpy as np
+from diskcache import Cache
 
-# installed specialized modules
 import stanza
 from stanza.models.common.doc import Document
 
@@ -67,6 +68,7 @@ class Corpus:
                         # (in a child-parent relation in a dependency parse)
     _sentences_seen = 0
     _parsed_sentences = None
+    _first_run = True
     
     
     def __init__(self, 
@@ -90,6 +92,8 @@ class Corpus:
         self._store = store # whether to store read sentences in memory 
                             # (if False, read() does file I/O each time)
         self._parsed_sentences = []
+        self._pair_stats = defaultdict(int)
+        self._first_run = True
         if parsed: self._parsed = parsed
         else: raise ValueError('must provide depparsed input')
         
@@ -109,9 +113,46 @@ class Corpus:
             # assume we are given a list of filepaths as strs or or Path-like objects
             self._files = list(map(_pathify, directory_or_filelist))
         
-        random.seed(42)
-        random.shuffle(self._files)
-    
+        self._files = sorted(self._files)
+        # random.seed(42)
+        # random.shuffle(self._files)
+
+
+    def _get_cache(self, prefix='~/.cache/composlang/', tag: str = None):
+        '''
+        creates and returns a Cache() object from diskcache
+        '''
+        if tag is None:
+            s = shake_128()
+            s.update(bytes(' '.join(map(str, self._files)), 'utf-8'))
+            tag = s.hexdigest(4)
+
+        root = Path(prefix).expanduser().resolve()
+        root /= tag
+        return Cache(str(root))
+
+
+    def from_cache(self, prefix='~/.cache/composlang/', tag: str = None):
+
+        c = self._get_cache(prefix, tag)        
+
+        log(f'loading from cache at {c.directory}')
+        for attr in ('_sentences_seen', '_pair_stats', '_upos_token_stats', '_files', '_first_run'):
+            setattr(self, attr, c[attr])
+
+
+    def to_cache(self, prefix='~/.cache/composlang/', tag: str = None):
+
+        c = self._get_cache(prefix, tag)        
+
+        log(f'caching to {c.directory}')
+        for attr in ('_sentences_seen', '_pair_stats', '_upos_token_stats', '_files', '_first_run'):
+            obj = getattr(self, attr)
+            if isinstance(obj, abc.Mapping):
+                c[attr] = dict(obj)
+            else:
+                c[attr] = obj
+
         
     def read(self, return_sentences=True) -> Document:
         '''
@@ -152,12 +193,15 @@ class Corpus:
             yield from self._parsed_sentences
             return
         
-        # recompute stats each time read() is called if we aren't storing the sentences in memory
-        self._upos_token_stats = defaultdict(lambda: defaultdict(int)) # UPOS -> token -> num_occurrences
-        self._pair_stats = defaultdict(int)
-        self._parsed_sentences = []
+        # compute stats only the first time read() is called
+        if self._first_run:
+            self._upos_token_stats = defaultdict(lambda: defaultdict(int)) # UPOS -> token -> num_occurrences
+            self._pair_stats = defaultdict(int)
+            self._parsed_sentences = []
+
         self._sentences_seen = 0
         n_sentences = self._n_sentences
+        
         
         # sum the total lines in a file for tqdm without loading them all in memory
         if n_sentences == float('inf'):
@@ -199,7 +243,7 @@ class Corpus:
                     # accumulate statistics about words
                     for w in sent.words:
                         if self._lower: w.text = w.text.lower()
-                        self._upos_token_stats[w.upos][w.text] += 1
+                        if self._first_run: self._upos_token_stats[w.upos][w.text] += 1
                     
                     this_sentence = []
                     self._sentences_seen += 1
@@ -213,6 +257,8 @@ class Corpus:
                 if self._sentences_seen >= n_sentences:
                     break
 
+            if self._first_run: 
+                self._first_run = False
             log(f'finished processing after seeing {self._sentences_seen} sentences.')
 
 
@@ -243,11 +289,12 @@ class Corpus:
 
     
     def __len__(self):
+        return self._sentences_seen
         return self._n_sentences
     
     
     @classmethod
-    def _extract_edges(cls, sentence: stanza.models.common.doc.Sentence) -> (Word, Word):
+    def _extract_edges(cls, sentence: stanza.models.common.doc.Sentence) -> typing.Tuple[Word, Word]:
         for w in sentence.words:
             # if w is root, it has no head, so skip
             if w.head == 0:
@@ -262,12 +309,11 @@ class Corpus:
         if len(self._pair_stats) == 0:
             list(self.extract_edges(threshold=2))
         return self._pair_stats
-    
+
     
     def extract_edges(self,
-                      sentences: typing.Iterable[stanza.models.common.doc.Sentence] = None,
                       update_stats: bool = True,
-                      threshold: int = 2):
+                      threshold: int = 2) -> typing.Tuple[Word, Word]:
         '''
         extract edges (all head-relations) from either the given sentences,
         or if no sentences are given, read sentences from the Corpus.
@@ -296,21 +342,19 @@ class Corpus:
                     if p not in self.prune_tokens(threshold=threshold): continue
                     
                     if update_stats:
-                        self._pair_stats[w,p] += 1
+                        self._pair_stats[w, p] += 1
                         
                     yield w, p
     
     
-    def generate_graph(self, upos: typing.Iterable = (),
+    def generate_graph(self, child_upos: str = None, parent_upos: str = None,
                        threshold: int = 2) -> 'nx.Graph':
         '''
         '''
-        uposes = set(self._upos_token_stats)
-        if upos: 
-            uposes.intersection_update(set(upos))
-        
         wg = WordGraph(((w,p) for w,p in self.extract_edges(threshold=threshold) 
-                        if w.upos in uposes and p.upos in uposes))
+                        if (child_upos is None or w.upos == child_upos) and \
+                           (parent_upos is None or p.upos == parent_upos)))
+
         return wg
     
     
@@ -367,18 +411,18 @@ class Corpus:
         get the total number of occurrences of each token,
         restricted to the given uposes (optional), or all uposes available
         '''
-        uposes = set(self._upos_token_stats)
+        uposes = set(self._upos_token_stats.keys())
         if upos: 
             uposes.intersection_update(set(upos))
         
-        return {token: sum(self._upos_token_stats[upos][token] 
-                           if token in self._upos_token_stats[upos] 
-                           else 0 
-                           for upos in uposes)
-                for token in (t for u in uposes 
-                                for t in self._upos_token_stats[u])}
+        token_counts = defaultdict(int)
+        for upos in uposes:
+            for token in self._upos_token_stats[upos].keys():
+                token_counts[token] += self._upos_token_stats[upos][token] 
         
-    
+        return token_counts
+                           
+
     @lru_cache(maxsize=1)
     def prune_tokens(self, threshold=2):
         '''
