@@ -1,9 +1,6 @@
 
-import IPython
 from corpus import Corpus
 
-c = Corpus('COCA', n_sentences=1e5)
-# _ = list(c.read()) # initial run-through for pruning behavior
+c = Corpus('COCA', cache_dir='./cache', tag='coca_inf', n_sentences=float('inf'))
+# _ = list(c.read()) # initial run-through for constructing a cache
 _ = list(c.extract_edges()) # for computing pairwise occurrence stats
-
-c.to_cache(prefix='./cache', tag='coca_1e5')
