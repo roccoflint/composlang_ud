@@ -27,6 +27,9 @@ from stanza.models.common.doc import Document
 from wordmatrix import WordGraph
 
 
+class UsageError(RuntimeError): ...
+
+
 def log(*things, **more_things):
     '''
     placeholder logging method to be changed later
@@ -63,17 +66,23 @@ class Corpus:
     _fmt = None
     _parsed = True
     _files = None
+    # NOTE: MARKED FOR DEPRECATION:
     _upos_token_stats = None # UPOS -> token -> num_occurrences
+    _token_stats = None # token: Word -> num_occ: int
     _pair_stats = None # ((token1, upos1), (token2, upos2)) -> num_occerrences 
                         # (in a child-parent relation in a dependency parse)
     _sentences_seen = 0
     _parsed_sentences = None
     _first_run = True
-    
+    _lines_read = 0
+    _total = None
+
     
     def __init__(self, 
                  directory_or_filelist: typing.Union[Path, str, 
                                                      typing.Iterable[typing.Union[Path, str]]], 
+                 cache_dir: typing.Union[str, Path] = '~/.cache/composlang',
+                 tag: str = None,
                  n_sentences: int = None, store: bool = False,
                  fmt: typing.List[str] = ('sentence_id:int', 'text:str', 'lemma:str', 
                                           'id:int', 'head:int', 'upos:str', 'deprel:str'),
@@ -88,12 +97,15 @@ class Corpus:
         self._fmt = fmt
         self._sep = sep
         self._lower = lowercase
-        self._n_sentences = n_sentences or float('inf')
+        self._n_sentences = n_sentences or float('inf') # upper limit for sentences to process
         self._store = store # whether to store read sentences in memory 
                             # (if False, read() does file I/O each time)
         self._parsed_sentences = []
         self._pair_stats = defaultdict(int)
+        self._token_stats = defaultdict(int) # UPOS -> token -> num_occurrences
         self._first_run = True
+        self._cache_dir = cache_dir
+        self._cache_tag = tag
         if parsed: self._parsed = parsed
         else: raise ValueError('must provide depparsed input')
         
@@ -114,11 +126,13 @@ class Corpus:
             self._files = list(map(_pathify, directory_or_filelist))
         
         self._files = sorted(self._files)
-        # random.seed(42)
-        # random.shuffle(self._files)
+        try:
+            self.from_cache()
+        except ValueError as e:
+            raise
 
 
-    def _get_cache(self, prefix='~/.cache/composlang/', tag: str = None):
+    def _get_cache(self, prefix, tag=None):
         '''
         creates and returns a Cache() object from diskcache
         '''
@@ -131,30 +145,37 @@ class Corpus:
         root /= tag
         return Cache(str(root))
 
+    _attrs_to_cache = ('_sentences_seen', '_lines_read', '_pair_stats',
+                       '_token_stats', '_files', '_first_run', '_total')
 
-    def from_cache(self, prefix='~/.cache/composlang/', tag: str = None):
+    def from_cache(self, prefix=None, tag: str = None):
+        '''
+        recover core data of this instance to the cache under the directory `prefix/tag`
+        '''
+        prefix = prefix or self._cache_dir
+        tag = tag or self._cache_tag
 
         c = self._get_cache(prefix, tag)        
-
         log(f'loading from cache at {c.directory}')
-        for attr in ('_sentences_seen', '_pair_stats', '_upos_token_stats', '_files', '_first_run'):
-            setattr(self, attr, c[attr])
+        for attr in self._attrs_to_cache:
+            obj = c[attr]
+            setattr(self, attr, obj)
 
 
-    def to_cache(self, prefix='~/.cache/composlang/', tag: str = None):
+    def to_cache(self, prefix=None, tag: str = None):
+        '''
+        dump critical state data of this instance to the cache under the directory `prefix/tag`
+        '''
+        prefix = prefix or self._cache_dir
+        tag = tag or self._cache_tag
 
         c = self._get_cache(prefix, tag)        
-
         log(f'caching to {c.directory}')
-        for attr in ('_sentences_seen', '_pair_stats', '_upos_token_stats', '_files', '_first_run'):
+        for attr in self._attrs_to_cache:
             obj = getattr(self, attr)
-            if isinstance(obj, abc.Mapping):
-                c[attr] = dict(obj)
-            else:
-                c[attr] = obj
-
+            c[attr] = obj
         
-    def read(self, return_sentences=True) -> Document:
+    def read(self, return_sentences=False, cache_every=100) -> Document:
         '''
         Reads a parsed corpus file, up to n_sentences in total
         the corpus file is formatted similar to depparse output produced by 
@@ -193,37 +214,57 @@ class Corpus:
             yield from self._parsed_sentences
             return
         
-        # compute stats only the first time read() is called
         if self._first_run:
+            # NOTE: marked for deprecation
             self._upos_token_stats = defaultdict(lambda: defaultdict(int)) # UPOS -> token -> num_occurrences
+            # TODO: proposal: change ^ to fol.
+            self._token_stats = defaultdict(int) # UPOS -> token -> num_occurrences
             self._pair_stats = defaultdict(int)
             self._parsed_sentences = []
+            self._sentences_seen = 0
+            self._lines_read = 0
+            self._first_run = False # hereafter stats are stateful, even across stops and 
+                                    # restarts (using disk-backed caching)
 
-        self._sentences_seen = 0
+        # if we are resuming from previous state, we want to skip lines that are already processed.
+        lines_to_skip = self._lines_read
+
+        # upper limit
         n_sentences = self._n_sentences
         
-        
         # sum the total lines in a file for tqdm without loading them all in memory
-        if n_sentences == float('inf'):
-            with fileinput.input(files=self._files) as f:
-                total = sum(1 for _ in f)
-        else:
-            total = n_sentences
-        with fileinput.input(files=self._files) as f, tqdm(total=total, leave=False) as T:
+        if self._total is None:
+            if n_sentences >= float('inf'):
+                with fileinput.input(files=self._files) as f:
+                    self._total = sum(1 for _ in f)
+                log(f'Preparing to read {self._total} lines')
+            else:
+                self._total = n_sentences
+                log(f'Preparing to read {self._total} sentences')
+
+        with fileinput.input(files=self._files) as f, tqdm(total=self._total, leave=False) as T:
             # more_itertools.peekable allows seeing future context without using up item from iterator
             f = peekable(f)
+
+            if n_sentences >= float('inf'): # process all sentences; progressbar tracks # of lines
+                T.update(self._lines_read)
+            else: # process a predetermiend # of sentences; also reflected in progressbar
+                T.update(self._sentences_seen)
 
             this_sentence = []
             current_file = fileinput.filename()
             for line in f:
-                if total >= float('inf'): T.update(1)
-                if line.strip() == '': continue
+                if lines_to_skip:
+                    lines_to_skip -= 1
+                    continue
+                    
+                if self._total >= float('inf'): T.update(1)
+                # if line.strip() == '': continue
                 
                 if current_file != (current_file := fileinput.filename()):
                     log(f'processing {current_file}')
 
-                parse = Corpus.segment_line(line, 
-                                            sep=self._sep, fmt=self._fmt)
+                parse = self.segment_line(line, sep=self._sep, fmt=self._fmt)
                 # sentence_id is only unique within a filename, so
                 # two files containing sequential sentence IDs (e.g., [1,], [1,2,3,])
                 # will cause result in the concatenation of two distinct sentences
@@ -237,25 +278,38 @@ class Corpus:
                 next_parse['sentence_id'] = f"{fileinput.filename()}_{next_parse['sentence_id']}"
 
                 if next_parse['sentence_id'] != parse['sentence_id']:
+
                     # process current sentence and reset the "current sentence"
                     [sent] = Document([this_sentence]).sentences
                     
                     # accumulate statistics about words
                     for w in sent.words:
                         if self._lower: w.text = w.text.lower()
-                        if self._first_run: self._upos_token_stats[w.upos][w.text] += 1
+                        self._upos_token_stats[w.upos][w.text] += 1
+                        self._token_stats[Word(w.text, w.upos)] += 1
+                    
+                    self._lines_read += len(this_sentence)
+                    self._sentences_seen += 1
+                    if self._total < float('inf'): T.update(1)
                     
                     this_sentence = []
-                    self._sentences_seen += 1
-                    if total < float('inf'): T.update(1)
+
+                    if self._sentences_seen % cache_every == 0:
+                        self.to_cache()
                     
                     if self._store: 
+                        raise DeprecationWarning
                         self._parsed_sentences.append(sent)
                     if return_sentences:
+                        raise DeprecationWarning
                         yield sent
 
                 if self._sentences_seen >= n_sentences:
+                    # only cache again if we haven't just now cached!
+                    if self._sentences_seen % cache_every != 0:
+                        self.to_cache()
                     break
+                
 
             if self._first_run: 
                 self._first_run = False
@@ -289,7 +343,6 @@ class Corpus:
     
     def __len__(self):
         return self._sentences_seen
-        return self._n_sentences
     
     
     @classmethod
