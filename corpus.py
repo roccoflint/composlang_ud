@@ -239,7 +239,7 @@ class Corpus:
         if self._total is None:
             if n_sentences >= float('inf'):
                 with fileinput.input(files=self._files) as f:
-                    self._total = sum(1 for _ in f)
+                    self._total = sum(1 for _ in tqdm(f, desc='counting # of lines'))
                 log(f'Preparing to read {self._total} lines')
             else:
                 self._total = n_sentences
