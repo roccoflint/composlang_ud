@@ -19,8 +19,8 @@ class WordGraph():
             nodes[w] = nodes.get(w, len(nodes))
             nodes[p] = nodes.get(p, len(nodes))
 
-            g.add_node(nodes[w], label=str(w), group=str(w.upos))
-            g.add_node(nodes[p], label=str(p), group=str(p.upos))
+            g.add_node(nodes[w], label=str(w), group=str(w.upos), bipartite=0)
+            g.add_node(nodes[p], label=str(p), group=str(p.upos), bipartite=1)
 
             edges[nodes[w], nodes[p]] += 1
 
@@ -34,13 +34,28 @@ class WordGraph():
         if n_nodes in {None, -1, 0}:
             return self.g
         return self.g.subgraph(np.random.choice(self.g.nodes, n_nodes))
-        
+
+
+    @classmethod
+    def draw_bipartite(cls, subG):
+        l = {n for n, d in subG.nodes(data=True) if d["bipartite"] == 0}
+        r = set(subG) - l
+        l = sorted(l, key=lambda node: subG.degree[node])
+        r = sorted(r, key=lambda node: subG.degree[node])
+        pos = {}
+        # Update position for node from each group
+        pos.update((node, (1, index)) for index, node in enumerate(l))
+        pos.update((node, (2, index)) for index, node in enumerate(r))
+        return nx.draw(subG, pos=pos, with_labels=False)
+
         
     def to_pyvis(self, n_nodes=1_000, notebook=False) -> Network:
         
+        subG = self.subgraph(n_nodes)
+    
         # net = Network('700px', '1000px', notebook=True)
         net = Network(height='500px', width='100%', notebook=notebook)
-        net.from_nx(self.subgraph(n_nodes))
+        net.from_nx(subG)
         
         net.force_atlas_2based()
         # net.barnes_hut(central_gravity=1, spring_length=100)
