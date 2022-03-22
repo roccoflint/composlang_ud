@@ -338,8 +338,9 @@ class Corpus:
                 for w, p in Corpus._extract_edges(sentence):
                     
                     # don't store stats for very low frequency words
-                    if w not in self.prune_tokens(threshold=threshold): continue
-                    if p not in self.prune_tokens(threshold=threshold): continue
+                    # TODO
+                    # if w.text not in self.prune_tokens(threshold=threshold): continue
+                    # if p.text not in self.prune_tokens(threshold=threshold): continue
                     
                     if update_stats:
                         self._pair_stats[w, p] += 1
@@ -423,12 +424,15 @@ class Corpus:
         return token_counts
                            
 
-    @lru_cache(maxsize=1)
+    @lru_cache()
     def prune_tokens(self, threshold=2):
         '''
         '''
+        raise NotImplementedError
+        if len(self.token_counts()) == 0:
+            for i in self.read(): pass
         # get token counts across all UPOS
-        token_counts = self.token_counts(upos=())
+        token_counts = self.token_counts()
         # filter tokens that occur at least `threshold` number of times
         tokens_to_keep = {t for t in token_counts if token_counts[t] >= threshold}
         return tokens_to_keep
