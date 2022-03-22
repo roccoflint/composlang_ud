@@ -276,7 +276,6 @@ class Corpus:
         for i, item in enumerate(fmt):
             label, typ = item.split(':')
             # if an explicit Python type is provided, cast the label to it
-            # otherwise keep it as-is (str)
             typecast = pydoc.locate(typ or 'str')
             try:
                 value = typecast(row[i])
@@ -302,18 +301,10 @@ class Corpus:
             p = sentence.words[w.head-1]
             yield Word(w.text, w.upos), Word(p.text, p.upos)
     
-        
-    def extract_upos_pair_counts(self, threshold: int = 2):
-        '''
-        '''
-        if len(self._pair_stats) == 0:
-            list(self.extract_edges(threshold=2))
-        return self._pair_stats
-
     
     def extract_edges(self,
                       update_stats: bool = True,
-                      threshold: int = 2) -> typing.Tuple[Word, Word]:
+                      ) -> typing.Tuple[Word, Word]:
         '''
         extract edges (all head-relations) from either the given sentences,
         or if no sentences are given, read sentences from the Corpus.
@@ -336,29 +327,23 @@ class Corpus:
         else:
             for sentence in self.read():
                 for w, p in Corpus._extract_edges(sentence):
-                    
-                    # don't store stats for very low frequency words
-                    # TODO
-                    # if w.text not in self.prune_tokens(threshold=threshold): continue
-                    # if p.text not in self.prune_tokens(threshold=threshold): continue
-                    
                     if update_stats:
                         self._pair_stats[w, p] += 1
-                        
                     yield w, p
     
     
     def generate_graph(self, child_upos: str = None, parent_upos: str = None,
-                       threshold: int = 2) -> 'nx.Graph':
+                       ) -> 'nx.Graph':
         '''
         '''
-        wg = WordGraph(((w,p) for w,p in self.extract_edges(threshold=threshold) 
+        wg = WordGraph(((w,p) for w,p in self.extract_edges() 
                         if (child_upos is None or w.upos == child_upos) and \
                            (parent_upos is None or p.upos == parent_upos)))
 
         return wg
     
     
+    # MARKED FOR DEPRECATION
     @classmethod
     def _extract_upos_pairs(cls,
                             sentence: stanza.models.common.doc.Sentence, 
@@ -388,12 +373,10 @@ class Corpus:
         '''
         Extract pairs of certain UPOSes from the sentences
         '''
-        for sentence in self.read():
-            yield from Corpus._extract_upos_pairs(sentence,
-                                                  child_upos=child_upos, 
-                                                  parent_upos=parent_upos, 
-                                                  include_context=include_context)
-    
+        for w, p in self.extract_edges():
+            if w.upos == child_upos and p.upos == parent_upos:
+                yield w, p
+
     
     def upos_counts(self, unique: bool = False):
         '''
@@ -423,49 +406,25 @@ class Corpus:
         
         return token_counts
                            
-
-    @lru_cache()
-    def prune_tokens(self, threshold=2):
-        '''
-        '''
-        raise NotImplementedError
-        if len(self.token_counts()) == 0:
-            for i in self.read(): pass
-        # get token counts across all UPOS
-        token_counts = self.token_counts()
-        # filter tokens that occur at least `threshold` number of times
-        tokens_to_keep = {t for t in token_counts if token_counts[t] >= threshold}
-        return tokens_to_keep
-
     
     def extract_combinations(self,
                              child_upos, parent_upos,
-                             threshold: int = 2,
-                             ) -> typing.Iterable[np.array]:        
-        
+                             unique: bool = True,
+                             ) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:    
+
         child_to_parent = defaultdict(int)
         parent_to_child = defaultdict(int)
         
-        for (w,p) in self.extract_upos_pair_counts(threshold=threshold):
+        for (w,p), ct in self._pair_stats.items():
             if (child_upos == '*' or w.upos == child_upos) and (parent_upos == '*' or p.upos == parent_upos):
-                child_to_parent[w] += 1
-                parent_to_child[p] += 1
+                child_to_parent[w] += 1 if unique else ct
+                parent_to_child[p] += 1 if unique else ct
                                                    
         child_to_parent_arr = np.array(sorted(child_to_parent.values(), key=lambda c:-c))
         parent_to_child_arr = np.array(sorted(parent_to_child.values(), key=lambda c:-c))
         
         child_to_parent_labels = np.array(sorted(child_to_parent.keys(), key=lambda k:-child_to_parent[k]))
         parent_to_child_labels = np.array(sorted(parent_to_child.keys(), key=lambda k:-parent_to_child[k]))
-        
-#         # filter by minimum no. of occurrences
-#         child_mask = child_to_parent_arr >= threshold
-#         parent_mask = parent_to_child_arr >= threshold
-        
-#         child_to_parent_arr = child_to_parent_arr[child_mask]
-#         child_to_parent_labels = child_to_parent_labels[child_mask]
-        
-#         parent_to_child_arr = parent_to_child_arr[parent_mask]
-#         parent_to_child_labels = parent_to_child_labels[parent_mask]
         
         return child_to_parent_arr, child_to_parent_labels, parent_to_child_arr, parent_to_child_labels
     
