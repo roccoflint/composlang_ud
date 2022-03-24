@@ -164,6 +164,8 @@ class Corpus:
                 pass
             else:
                 raise e
+        log(f'successfully loaded cached data from {c.directory}')
+
 
     def to_cache(self, prefix=None, tag: str = None):
         '''
@@ -177,8 +179,9 @@ class Corpus:
         for attr in self._attrs_to_cache:
             obj = getattr(self, attr)
             c[attr] = obj
+        log(f'successfully cached to {c.directory}')
         
-    def read(self, return_sentences=False, cache_every=1_000) -> Document:
+    def read(self, return_sentences=False, cache_every=10_000) -> Document:
         '''
         Reads a parsed corpus file, up to n_sentences in total
         the corpus file is formatted similar to depparse output produced by 
@@ -261,7 +264,6 @@ class Corpus:
                     lines_to_skip -= 1
                     continue
                     
-                if self._total >= float('inf'): T.update(1)
                 # if line.strip() == '': continue
                 
                 if current_file != (current_file := fileinput.filename()):
@@ -276,8 +278,8 @@ class Corpus:
                 this_sentence += [parse]
 
                 # have we crossed a sentence boundary? alternatively, are we out of lines to process?
-                dummy_line = f'{parse["sentence_id"] + "_EOF"}{self._sep}' + self._sep.join(map(str, range(6 + 10)))
-                next_parse = self.segment_line(f.peek(dummy_line), sep=self._sep, fmt=self._fmt) # uses dummy line if no more lines to process
+                dummy_line = lambda: f'{parse["sentence_id"] + "_EOF"}{self._sep}' + self._sep.join(map(str, range(6 + 10)))
+                next_parse = self.segment_line(f.peek(dummy_line()), sep=self._sep, fmt=self._fmt) # uses dummy line if no more lines to process
                 next_parse['sentence_id'] = f"{fileinput.filename()}_{next_parse['sentence_id']}"
 
                 if next_parse['sentence_id'] != parse['sentence_id']:
@@ -288,16 +290,20 @@ class Corpus:
                     # accumulate statistics about words
                     for w in sent.words:
                         if self._lower: w.text = w.text.lower()
-                        self._upos_token_stats[w.upos][w.text] += 1
+                        # self._upos_token_stats[w.upos][w.text] += 1
                         self._token_stats[Word(w.text, w.upos)] += 1
                     
                     self._lines_read += len(this_sentence)
                     self._sentences_seen += 1
-                    if self._total < float('inf'): T.update(1)
+                    if self._total < float('inf'): 
+                        T.update(1)
+                    else: 
+                        T.update(len(this_sentence))
                     
                     this_sentence = []
 
                     if self._sentences_seen % cache_every == 0:
+                        log(f'reached {self._sentences_seen} sentences! caching.')
                         self.to_cache()
                     
                     if self._store: 
