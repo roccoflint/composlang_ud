@@ -133,3 +133,4 @@ cache/
 *.sqlite
 .vscode
 *.bak
+composlang.code-workspace
