@@ -16,10 +16,9 @@ from sqlitedict import SqliteDict
 from stanza.models.common.doc import Document
 from tqdm import tqdm
 
-from src.graph import WordGraph
-from src.utils import iterable_from_directory_or_filelist, log
-from src.word import \
-    Word  # currently this is a lambda x: (x[0], x[1]) for serializability
+from composlang.graph import WordGraph
+from composlang.utils import iterable_from_directory_or_filelist, log
+from composlang.word import Word
 
 
 class Corpus:
