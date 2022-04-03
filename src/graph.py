@@ -7,7 +7,7 @@ import networkx as nx
 from pyvis.network import Network
 
 
-class WordGraph():
+class WordGraph:
         
     def __init__(self, wordpairs, backend='nx'):
             
