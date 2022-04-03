@@ -128,4 +128,8 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-cache
+cache/
+*.db
+*.sqlite
+.vscode
+*.bak
