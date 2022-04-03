@@ -134,3 +134,4 @@ cache/
 .vscode
 *.bak
 composlang.code-workspace
+*.out
