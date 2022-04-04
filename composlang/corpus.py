@@ -3,7 +3,7 @@ import pydoc
 import time
 import typing
 from collections import Counter, defaultdict
-from functools import reduce
+from functools import reduce, cached_property
 from pathlib import Path
 
 import numpy as np
@@ -47,7 +47,6 @@ class Corpus:
     # in a child-parent relation in a dependency parse
     cache = None
 
-
     def __init__(self,
                  directory_or_filelist: typing.Union[Path, str,
                                                      typing.Iterable[typing.Union[Path, str]]],
@@ -79,6 +78,7 @@ class Corpus:
         self.load_cache()
         self._n_sentences = n_sentences or float('inf') # upper limit for no. of sentences to process
 
+
     @classmethod
     def from_cache(cls, cache_file: typing.Union[str, Path], 
                    n_sentences=None, fmt=None, sep=None, lowercase=None):
@@ -87,15 +87,72 @@ class Corpus:
         cache_tag = path.parts[-1]
         return cls('/dev/null', cache_dir, cache_tag, n_sentences, fmt, sep, lowercase)
 
+
     def __len__(self) -> int:
         return self._sentences_seen
 
     # use context manager to handle closing of cache
     def __enter__(self):
         return self # nothing to do here
+
     def __exit__(self, *args, **kws):
         self._close_cache()
 
+
+    ################################################################ 
+    #### accessing data of the class
+    ################################################################
+
+    @cached_property
+    def token_stats(self):
+        return Counter(self._token_stats)
+
+    @cached_property
+    def pair_stats(self):
+        return Counter(self._pair_stats)
+
+    @cached_property
+    def upos_counts(self, group_by_token: bool = False):
+        """get counts of the number of occurrences of each upos.
+
+        Args:
+            group_by_token (bool, optional): if True, consider each occurrence 
+                of a upos for the same token as one occurrence of the upos. 
+                if False, count each occurrence of a upos as distinct. i.e., the sum
+                of all upos occurrences should be ~ the same as the number of tokens.
+                Defaults to False.
+
+        Returns:
+            typing.Mapping: a (UPOS -> count) object
+        """
+        if group_by_token:
+            return Counter(upos for token, upos in self._token_stats)
+
+        # not grouping, so we want to consider each occurrence of each token
+        d = defaultdict(int)
+        for (token, upos), ct in self._token_stats.items():
+            d[upos] += ct
+        return d
+
+    def get_upos_pairs(self, child_upos, parent_upos) -> typing.Tuple[Word, Word, int]:
+        '''
+        Constructs a generator over all pairs of tokens that match the given child_upos and
+        parent_upos values
+
+        Args:
+            child_upos (str): one of the several UPOSes in the corpus (e.g., NOUN, ADJ).
+                the "child" token (the token appearing as a child of the parent in the
+                dependency parse) will have to match this UPOS
+            parent_upos (str): see `child_upos`
+        '''
+        for w, p in self.pair_stats:
+            if w.upos == child_upos and p.upos == parent_upos:
+                yield w, p
+
+
+    ################################################################ 
+    #### caching behavior
+    ################################################################ 
 
     def _close_cache(self):
         try:
@@ -158,12 +215,21 @@ class Corpus:
         log(f'successfully cached to {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds')
 
 
-    def read(self, batch_size:int=1_024):
-        '''
-        Reads a parsed corpus file 
-        the corpus file is formatted similar to depparse output below, 
-        or according to a custom format which specified at instantiation.
-        '''
+    ################################################################ 
+    #### read corpus
+    ################################################################ 
+
+    def read(self, batch_size: int = 5_000):
+        """Reads a parsed corpus file.
+            the corpus file is formatted similar to the example in the `sample_input`
+            directory of this project, or according to a custom format which specified at
+            this object's instantiation (using `fmt`, `sep` arguments). See `Corpus.__init__`
+            
+        Args:
+            batch_size (int, optional): Size of sentence batches to accummulate before
+                processing. Writing to cache is also done in `batch_size` increments.
+                Defaults to 5_000.
+        """
         from stanza.models.common.doc import Document
         
         dummy_line = lambda: f'{"__EOF__"}{self._sep}' + self._sep.join(map(str, range(6 + 10)))
@@ -254,33 +320,48 @@ class Corpus:
             log(f'finished processing after seeing {self._sentences_seen} sentences.')
 
 
-    def digest_sentencebatch(self, sb: list):
-        ''' '''
+    def digest_sentencebatch(self, sb: typing.List['stanza.models.common.doc.Sentence']):
+        """Digests a sentencebatch containing sentences by computing its token
+            and pair occurrence stats and updating the instance's counter objects
+            tracking the global stats for this corpus
+
+        Args:
+            sb (list): sentencebatch containing stanza Sentences
+        """        
         # accumulate statistics about words and word pairs in the sentence
         stats = Parallel(n_jobs=-2)(delayed(self._digest_sentence)(sent) for sent in sb)
         for token_stat, pair_stat in stats:
             self._token_stats.update(token_stat)
             self._pair_stats.update(pair_stat)
 
-
     @classmethod
-    def _digest_sentence(cls, sent) -> typing.Tuple[Counter, Counter]:
-        '''
-        "digests" a sentence into counts of tokens and token pairs in it
-        '''
+    def _digest_sentence(cls, sent: 'stanza.models.common.doc.Sentence') -> typing.Tuple[Counter, Counter]:
+        """'digests' a sentence into counts of tokens and token pairs in it
+
+        Args:
+            sent (stanza.models.common.doc.Sentence): input Sentence
+
+        Returns:
+            typing.Tuple[Counter, Counter]: token_stats, pair_stats for this sentence
+        """        
         ts = Counter([Word(w.text, w.upos) for w in sent.words])
         ps = Counter(cls._extract_edges_from_sentence(sent))
         return ts, ps
 
-
     @classmethod
     def segment_line(cls, line: str, sep:str, fmt:typing.Iterable[str]) -> dict:
-        '''
-        Reads the columns from a line corresponding to a single token in a parse. 
+        """Reads the columns from a line corresponding to a single token in a parse.  Returns them
+            as a labeled dictionary, with labels corresponding to the `fmt` list in the order of
+            appearance.
         
-        Returns them as a labeled dictionary, with labels corresponding to the 
-            `fmt` list in the order of appearance.
-        '''
+        Args:
+            line (str): _description_
+            sep (str): _description_
+            fmt (typing.Iterable[str]): _description_
+
+        Returns:
+            dict: _description_
+        """       
         doc = {}
         row = line.strip().split(sep)
         # if fmt is specified, override self._fmt; else fall back on self._fmt
@@ -294,14 +375,22 @@ class Corpus:
                 log('ERR:', line, line.strip().split(sep))
                 raise
             doc[label] = value
-
         return doc
 
 
     @classmethod
     def _extract_edges_from_sentence(cls,
-                                     sentence: stanza.models.common.doc.Sentence) -> \
+                                     sentence: 'stanza.models.common.doc.Sentence') -> \
                                      typing.Iterable[typing.Tuple[Word, Word]]:
+        """Extracts all the edges in the dependecy tree of the sentence, returns them
+            as tuples of `Word` (with text and upos information preserved)
+
+        Args:
+            sentence: a stanza Sentence containing a dependency parse
+
+        Returns:
+            typing.List[typing.Tuple[Word]]: Edges in the sentence
+        """                                     
         edges = []
         for w in sentence.words:
             # if w is root, it has no head, so skip
@@ -312,21 +401,13 @@ class Corpus:
 
         return edges
 
+ 
+    ################################################################ 
+    #### miscellaneous analysis-related stuff
+    ################################################################ 
 
-    def extract_upos_pairs(self,
-                           child_upos,
-                           parent_upos,
-                           include_context=False):
-        '''
-        Extract pairs of certain UPOSes from the sentences
-        '''
-        for w, p in self._pair_stats:
-            if w.upos == child_upos and p.upos == parent_upos:
-                yield w, p
-
-
-    def generate_graph(self, child_upos: str = None, parent_upos: str = None,
-                       ) -> 'nx.Graph':
+    def generate_graph(self, child_upos: str = None, 
+                       parent_upos: str = None) -> "networkx.Graph":
         '''
         '''
         wg = WordGraph(((w,p) for w,p in self.extract_edges()
@@ -334,35 +415,6 @@ class Corpus:
                            (parent_upos is None or p.upos == parent_upos)))
 
         return wg
-
-
-    # TODO
-    def upos_counts(self, unique: bool = False):
-        '''
-        get counts of the number of occurrences of each upos.
-        optionally, if unique=True, consider each token as one occurrence
-        '''
-        if unique:
-            return {upos: len(self._upos_token_stats[upos].values())
-                    for upos in self._upos_token_stats}
-        return Counter(upos for token, upos in self._token_stats)
-
-
-    def token_counts(self, upos: typing.Iterable = ()):
-        '''
-        get the total number of occurrences of each token,
-        restricted to the given uposes (optional), or all uposes available
-        '''
-        uposes = set(self._upos_token_stats.keys())
-        if upos:
-            uposes.intersection_update(set(upos))
-
-        token_counts = defaultdict(int)
-        for upos in uposes:
-            for token in self._upos_token_stats[upos].keys():
-                token_counts[token] += self._upos_token_stats[upos][token]
-
-        return token_counts
 
 
     def extract_combinations(self,
