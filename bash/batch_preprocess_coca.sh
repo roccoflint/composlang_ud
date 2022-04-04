@@ -1,7 +1,7 @@
 #!/bin/bash                                                                 
-#SBATCH -c 4
-#SBATCH -t 24:00:00
-#SBATCH --mem=8G
+#SBATCH -c 6
+#SBATCH -t 72:00:00
+#SBATCH --mem=10G
 #SBATCH -p evlab
 #SBATCH -n 1
 #SBATCH --array=1-200%200
