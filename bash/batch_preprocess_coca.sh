@@ -1,11 +1,11 @@
 #!/bin/bash                                                                 
-#SBATCH -c 8
+#SBATCH -c 4
 #SBATCH -t 24:00:00
-#SBATCH --mem=100G
+#SBATCH --mem=8G
 #SBATCH -p evlab
 #SBATCH -n 1
-#SBATCH --array=1-200
-#SBATCH -o logs/slurm_output.%a.out # STDOUT
+#SBATCH --array=1-200%200
+#SBATCH -o logs/slurm.%A-%a.out # STDOUT
 
 count=$(find COCA/output_of_stanza_0* -maxdepth 1 -type f|wc -l)
 if [[ $SLURM_ARRAY_TASK_ID -ge $count ]]
