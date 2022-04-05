@@ -1,19 +1,19 @@
+# stdlib
 import fileinput
-import pydoc
 import time
 import typing
 from collections import Counter, defaultdict
-from functools import reduce, cached_property
+from functools import cached_property, reduce
 from pathlib import Path
 
+# installed packages
 import numpy as np
-import stanza
-# from diskcache import Cache
 from joblib import Parallel, delayed
 from more_itertools import peekable
 from sqlitedict import SqliteDict
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
+# local module
 from composlang.graph import WordGraph
 from composlang.utils import iterable_from_directory_or_filelist, log, pathify
 from composlang.word import Word
@@ -103,13 +103,15 @@ class Corpus:
     #### accessing data of the class
     ################################################################
 
-    @cached_property
+    # @cached_property
+    @property
     def token_stats(self):
-        return Counter(self._token_stats)
+        return self._token_stats
 
-    @cached_property
+    # @cached_property
+    @property
     def pair_stats(self):
-        return Counter(self._pair_stats)
+        return self._pair_stats
 
     @cached_property
     def upos_counts(self, group_by_token: bool = False):
@@ -134,20 +136,20 @@ class Corpus:
             d[upos] += ct
         return d
 
-    def get_upos_pairs(self, child_upos, parent_upos) -> typing.Tuple[Word, Word, int]:
-        '''
-        Constructs a generator over all pairs of tokens that match the given child_upos and
-        parent_upos values
+    # def get_upos_pairs(self, child_upos, parent_upos) -> typing.Tuple[Word, Word, int]:
+    #     '''
+    #     Constructs a generator over all pairs of tokens that match the given child_upos and
+    #     parent_upos values
 
-        Args:
-            child_upos (str): one of the several UPOSes in the corpus (e.g., NOUN, ADJ).
-                the "child" token (the token appearing as a child of the parent in the
-                dependency parse) will have to match this UPOS
-            parent_upos (str): see `child_upos`
-        '''
-        for w, p in self.pair_stats:
-            if w.upos == child_upos and p.upos == parent_upos:
-                yield w, p
+    #     Args:
+    #         child_upos (str): one of the several UPOSes in the corpus (e.g., NOUN, ADJ).
+    #             the "child" token (the token appearing as a child of the parent in the
+    #             dependency parse) will have to match this UPOS
+    #         parent_upos (str): see `child_upos`
+    #     '''
+    #     for w, p in self.pair_stats:
+    #         if w.upos == child_upos and p.upos == parent_upos:
+    #             yield w, p
 
 
     ################################################################ 
@@ -189,7 +191,8 @@ class Corpus:
         '''
         log(f'attempt loading from cache at {self._cache_dir}/{self._cache_tag}')
         start = time.process_time()
-        for attr, default in self._attrs_to_cache:
+        for attr, default in tqdm(self._attrs_to_cache, desc='loading key-value pairs from cache'):
+            print(f'{attr}', end=' ')
             try:
                 obj = self.cache[attr]
                 setattr(self, attr, obj)
@@ -272,6 +275,7 @@ class Corpus:
                     self._current_file = fileinput.filename()
                     log(f'processing {self._current_file}')
 
+                if self._lower: line = line.lower()
                 parse = self.segment_line(line, sep=self._sep, fmt=self._fmt)
                 # sentence_id is only unique within a filename, so two files containing sequential
                 # sentence IDs (e.g., [1,], [1,2,3,]) will cause result in the concatenation of two
@@ -362,6 +366,7 @@ class Corpus:
         Returns:
             dict: _description_
         """       
+        import pydoc
         doc = {}
         row = line.strip().split(sep)
         # if fmt is specified, override self._fmt; else fall back on self._fmt
@@ -406,29 +411,33 @@ class Corpus:
     #### miscellaneous analysis-related stuff
     ################################################################ 
 
-    def generate_graph(self, child_upos: str = None, 
+    def generate_graph(self, 
+                       child_upos: str = None, 
                        parent_upos: str = None) -> "networkx.Graph":
         '''
         '''
-        wg = WordGraph(((w,p) for w,p in self.extract_edges()
+        raise NotImplementedError
+        wg = WordGraph(((w,p) for w,p in self.pair_stats
                         if (child_upos is None or w.upos == child_upos) and \
                            (parent_upos is None or p.upos == parent_upos)))
 
         return wg
 
 
-    def extract_combinations(self,
-                             child_upos, parent_upos,
-                             unique: bool = True,
-                             ) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    # def extract_combinations(self,
+    #                          child_upos, parent_upos,
+    #                          collapse_by_token: bool = True,
+    #                          ) -> typing.Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 
-        child_to_parent = defaultdict(int)
-        parent_to_child = defaultdict(int)
+    #     child_to_parent = defaultdict(int)
+    #     parent_to_child = defaultdict(int)
 
-        for (w,p), ct in self._pair_stats.items():
-            if (child_upos == '*' or w.upos == child_upos) and (parent_upos == '*' or p.upos == parent_upos):
-                child_to_parent[w] += 1 if unique else ct
-                parent_to_child[p] += 1 if unique else ct
+    #     for (w,p), ct in self._pair_stats.items():
+    #         if (child_upos == '*' or w.upos == child_upos) and (parent_upos == '*' or p.upos == parent_upos):
+    #             child_to_parent[w] += 1 if collapse_by_token else ct
+    #             parent_to_child[p] += 1 if collapse_by_token else ct
+
+    #     return child_to_parent, parent_to_child
 
         child_to_parent_arr = np.array(sorted(child_to_parent.values(), key=lambda c:-c))
         parent_to_child_arr = np.array(sorted(parent_to_child.values(), key=lambda c:-c))
@@ -437,6 +446,7 @@ class Corpus:
         parent_to_child_labels = np.array(sorted(parent_to_child.keys(), key=lambda k:-parent_to_child[k]))
 
         return child_to_parent_arr, child_to_parent_labels, parent_to_child_arr, parent_to_child_labels
+
 
 
 
