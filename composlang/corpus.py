@@ -44,6 +44,7 @@ class Corpus:
     # tracking the linguistic features of interest within the corpus
     _token_stats = None # (token:str, upos:str) -> num_occ:int
     _pair_stats = None # ((token1:str, upos1:str), (token2, upos2)) -> num_occ:int
+    _triplet_stats = None # -> num_occ:int
     # in a child-parent relation in a dependency parse
     cache = None
 
@@ -70,6 +71,7 @@ class Corpus:
 
         self._pair_stats = Counter() # (token, token) -> num_occurrences
         self._token_stats = Counter() # token -> num_occurrences
+        self._triplet_stats = {'obj': Counter(), 'nsubj': Counter()} # -> num_occurrences
 
         # loads the pre-existing _pair_stats and _token_stats objects, or creates empty ones
         self._cache_dir = cache_dir
@@ -103,15 +105,17 @@ class Corpus:
     #### accessing data of the class
     ################################################################
 
-    # @cached_property
     @property
     def token_stats(self):
         return self._token_stats
 
-    # @cached_property
     @property
     def pair_stats(self):
         return self._pair_stats
+
+    @property
+    def triplet_stats(self):
+        return self._triplet_stats
 
     @cached_property
     def upos_counts(self, group_by_token: bool = False):
@@ -135,21 +139,6 @@ class Corpus:
         for (token, upos), ct in self._token_stats.items():
             d[upos] += ct
         return d
-
-    # def get_upos_pairs(self, child_upos, parent_upos) -> typing.Tuple[Word, Word, int]:
-    #     '''
-    #     Constructs a generator over all pairs of tokens that match the given child_upos and
-    #     parent_upos values
-
-    #     Args:
-    #         child_upos (str): one of the several UPOSes in the corpus (e.g., NOUN, ADJ).
-    #             the "child" token (the token appearing as a child of the parent in the
-    #             dependency parse) will have to match this UPOS
-    #         parent_upos (str): see `child_upos`
-    #     '''
-    #     for w, p in self.pair_stats:
-    #         if w.upos == child_upos and p.upos == parent_upos:
-    #             yield w, p
 
 
     ################################################################ 
@@ -182,8 +171,9 @@ class Corpus:
 
     _attrs_to_cache = (('_sentences_seen', int), ('_lines_read', int),
                       ('_current_file', lambda: None), ('_pair_stats', Counter),
-                      ('_token_stats', Counter), ('_files', lambda: None),
-                      ('_total', lambda: None), ('_n_sentences', lambda: None))
+                      ('_triplet_stats', Counter), ('_token_stats', Counter), 
+                      ('_files', lambda: None), ('_total', lambda: None), 
+                      ('_n_sentences', lambda: None))
 
     def load_cache(self, allow_empty=True):
         '''
@@ -222,7 +212,7 @@ class Corpus:
     #### read corpus
     ################################################################ 
 
-    def read(self, batch_size: int = 5_000):
+    def read(self, batch_size: int = 5_000, parallel: bool = True):
         """Reads a parsed corpus file.
             the corpus file is formatted similar to the example in the `sample_input`
             directory of this project, or according to a custom format which specified at
@@ -275,8 +265,9 @@ class Corpus:
                     self._current_file = fileinput.filename()
                     log(f'processing {self._current_file}')
 
-                if self._lower: line = line.lower()
                 parse = self.segment_line(line, sep=self._sep, fmt=self._fmt)
+                if self._lower: 
+                    parse['text'] = parse['text'].lower()
                 # sentence_id is only unique within a filename, so two files containing sequential
                 # sentence IDs (e.g., [1,], [1,2,3,]) will cause result in the concatenation of two
                 # distinct sentences (which would be an issue since the token_ids are valid within a sentence)
@@ -294,7 +285,12 @@ class Corpus:
 
                     if (sents_read := len(sentence_batch)) >= batch_size or self._sentences_seen+sents_read >= n_sentences:
 
-                        self.digest_sentencebatch(sentence_batch)
+                        ################################################################ 
+                        #### this is where the sentencebatch is processed
+                        ################################################################ 
+                        self.digest_sentencebatch(sentence_batch, parallel=parallel)
+                        ################################################################ 
+
                         lines_read = sum(len(s.words) for s in sentence_batch)
                         sentence_batch = []
 
@@ -316,7 +312,6 @@ class Corpus:
 
                     this_sentence = []
 
-
                 if self._sentences_seen >= n_sentences:
                     self.to_cache()
                     break
@@ -324,7 +319,8 @@ class Corpus:
             log(f'finished processing after seeing {self._sentences_seen} sentences.')
 
 
-    def digest_sentencebatch(self, sb: typing.List['stanza.models.common.doc.Sentence']):
+    def digest_sentencebatch(self, sb: typing.List['stanza.models.common.doc.Sentence'],
+                             parallel: bool = True):
         """Digests a sentencebatch containing sentences by computing its token
             and pair occurrence stats and updating the instance's counter objects
             tracking the global stats for this corpus
@@ -333,13 +329,17 @@ class Corpus:
             sb (list): sentencebatch containing stanza Sentences
         """        
         # accumulate statistics about words and word pairs in the sentence
-        stats = Parallel(n_jobs=-2)(delayed(self._digest_sentence)(sent) for sent in sb)
-        for token_stat, pair_stat in stats:
+        stats = Parallel(n_jobs=(-1 if parallel else 1))(delayed(self._digest_sentence)(sent) for sent in sb)
+        for token_stat, pair_stat, triplet_stat_obj, triplet_stat_nsubj in stats:
             self._token_stats.update(token_stat)
             self._pair_stats.update(pair_stat)
+            self._triplet_stats['obj'].update(triplet_stat_obj)
+            self._triplet_stats['nsubj'].update(triplet_stat_nsubj)
 
     @classmethod
-    def _digest_sentence(cls, sent: 'stanza.models.common.doc.Sentence') -> typing.Tuple[Counter, Counter]:
+    def _digest_sentence(cls, 
+                         sent: 'stanza.models.common.doc.Sentence',
+                         return_context=True) -> typing.Tuple[Counter, Counter]:
         """'digests' a sentence into counts of tokens and token pairs in it
 
         Args:
@@ -348,9 +348,11 @@ class Corpus:
         Returns:
             typing.Tuple[Counter, Counter]: token_stats, pair_stats for this sentence
         """        
-        ts = Counter([Word(w.text, w.upos) for w in sent.words])
-        ps = Counter(cls._extract_edges_from_sentence(sent))
-        return ts, ps
+        token_stat = Counter([Word(w.text, w.upos) for w in sent.words])
+        pair_stat, triplet_stat_obj, triplet_stat_nsubj = [*map(Counter, cls._extract_edges_from_sentence(sent))]
+        # if return_context:
+        #     return token_stat, pair_stat, triplet_stat, ' '.join(w.text for w in sent.words)
+        return token_stat, pair_stat, triplet_stat_obj, triplet_stat_nsubj
 
     @classmethod
     def segment_line(cls, line: str, sep:str, fmt:typing.Iterable[str]) -> dict:
@@ -385,8 +387,9 @@ class Corpus:
 
     @classmethod
     def _extract_edges_from_sentence(cls,
-                                     sentence: 'stanza.models.common.doc.Sentence') -> \
-                                     typing.Iterable[typing.Tuple[Word, Word]]:
+                                     sentence: 'stanza.models.common.doc.Sentence',
+                                     triple = ('ADJ', 'NOUN', 'VERB') # we're looking for VERB_ADJ_NOUN
+                                     ) -> typing.Iterable[typing.Tuple[Word, Word]]:
         """Extracts all the edges in the dependecy tree of the sentence, returns them
             as tuples of `Word` (with text and upos information preserved)
 
@@ -397,14 +400,27 @@ class Corpus:
             typing.List[typing.Tuple[Word]]: Edges in the sentence
         """                                     
         edges = []
+        triplets_obj = []
+        triplets_nsubj = []
         for w in sentence.words:
             # if w is root, it has no head, so skip
-            if w.head == 0:
+            if w.head == 0: 
                 continue
             p = sentence.words[w.head-1]
             edges += [(Word(w.text, w.upos), Word(p.text, p.upos))]
 
-        return edges
+            # this is to additionally extract the VERB
+            if p.head == 0: 
+                continue
+            q = sentence.words[p.head-1]
+
+            if (w.upos, p.upos, q.upos) == triple:
+                if p.deprel in ('obj',):
+                    triplets_obj += [(Word(q.text, q.upos), Word(w.text, w.upos), Word(p.text, p.upos))]
+                if p.deprel in ('nsubj', 'nsubj:pass'):
+                    triplets_nsubj += [(Word(q.text, q.upos), Word(w.text, w.upos), Word(p.text, p.upos))]
+
+        return edges, triplets_obj, triplets_nsubj
 
  
     ################################################################ 
