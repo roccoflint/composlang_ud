@@ -54,7 +54,7 @@ class Corpus:
 
                  cache_dir: typing.Union[str, Path] = './cache/composlang',
                  cache_tag: str = None,
-
+                 
                  n_sentences: int = None, 
                  fmt: typing.List[str] = ('sentence_id:int', 'text:str', 'lemma:str',
                                           'id:int', 'head:int', 'upos:str', 'deprel:str'),
@@ -69,8 +69,9 @@ class Corpus:
             log(f'could not find files at {directory_or_filelist}')
             # raise ValueError(f'could not find files at {directory_or_filelist}')
 
-        self._pair_stats = Counter() # (token, token) -> num_occurrences
         self._token_stats = Counter() # token -> num_occurrences
+        self._pair_stats = Counter() # (token, token) -> num_occurrences
+        self._skip_pair_stats = Counter() # (token, token) -> num_occurrences
         self._triplet_stats = {'obj': Counter(), 'nsubj': Counter()} # -> num_occurrences
 
         # loads the pre-existing _pair_stats and _token_stats objects, or creates empty ones
@@ -100,6 +101,9 @@ class Corpus:
     def __exit__(self, *args, **kws):
         self._close_cache()
 
+    def __repr__(self) -> str:
+        s = f'<{self.__class__.__name__}; sentences_seen={self._sentences_seen}; tokens={len(self.token_stats):,}>'
+        return s
 
     ################################################################ 
     #### accessing data of the class
@@ -108,11 +112,12 @@ class Corpus:
     @property
     def token_stats(self):
         return self._token_stats
-
     @property
     def pair_stats(self):
         return self._pair_stats
-
+    @property
+    def skip_pair_stats(self):
+        return self._skip_pair_stats
     @property
     def triplet_stats(self):
         return self._triplet_stats
@@ -137,6 +142,7 @@ class Corpus:
         # not grouping, so we want to consider each occurrence of each token
         d = defaultdict(int)
         for (token, upos), ct in self._token_stats.items():
+            token
             d[upos] += ct
         return d
 
@@ -170,8 +176,13 @@ class Corpus:
         return SqliteDict(str(root), flag='c')
 
     _attrs_to_cache = (('_sentences_seen', int), ('_lines_read', int),
-                      ('_current_file', lambda: None), ('_pair_stats', Counter),
-                      ('_triplet_stats', Counter), ('_token_stats', Counter), 
+                      ('_current_file', lambda: None), 
+
+                      ('_token_stats', Counter), 
+                      ('_pair_stats', Counter),
+                      ('_skip_pair_stats', Counter),
+                      ('_triplet_stats', Counter), 
+
                       ('_files', lambda: None), ('_total', lambda: None), 
                       ('_n_sentences', lambda: None))
 
@@ -286,7 +297,7 @@ class Corpus:
                     if (sents_read := len(sentence_batch)) >= batch_size or self._sentences_seen+sents_read >= n_sentences:
 
                         ################################################################ 
-                        #### this is where the sentencebatch is processed
+                        #### this is where the sentencebatch is processed ##############
                         ################################################################ 
                         self.digest_sentencebatch(sentence_batch, parallel=parallel)
                         ################################################################ 
@@ -330,9 +341,10 @@ class Corpus:
         """        
         # accumulate statistics about words and word pairs in the sentence
         stats = Parallel(n_jobs=(-1 if parallel else 1))(delayed(self._digest_sentence)(sent) for sent in sb)
-        for token_stat, pair_stat, triplet_stat_obj, triplet_stat_nsubj in stats:
+        for token_stat, pair_stat, skip_pair_stat, triplet_stat_obj, triplet_stat_nsubj in stats:
             self._token_stats.update(token_stat)
             self._pair_stats.update(pair_stat)
+            self._skip_pair_stats.update(skip_pair_stat)
             self._triplet_stats['obj'].update(triplet_stat_obj)
             self._triplet_stats['nsubj'].update(triplet_stat_nsubj)
 
@@ -349,10 +361,10 @@ class Corpus:
             typing.Tuple[Counter, Counter]: token_stats, pair_stats for this sentence
         """        
         token_stat = Counter([Word(w.text, w.upos) for w in sent.words])
-        pair_stat, triplet_stat_obj, triplet_stat_nsubj = [*map(Counter, cls._extract_edges_from_sentence(sent))]
+        pair_stat, skip_pair_stat, triplet_stat_obj, triplet_stat_nsubj = [*map(Counter, cls._extract_edges_from_sentence(sent))]
         # if return_context:
         #     return token_stat, pair_stat, triplet_stat, ' '.join(w.text for w in sent.words)
-        return token_stat, pair_stat, triplet_stat_obj, triplet_stat_nsubj
+        return token_stat, pair_stat, skip_pair_stat, triplet_stat_obj, triplet_stat_nsubj
 
     @classmethod
     def segment_line(cls, line: str, sep:str, fmt:typing.Iterable[str]) -> dict:
@@ -378,7 +390,7 @@ class Corpus:
             typecast = pydoc.locate(typ or 'str')
             try:
                 value = typecast(row[i])
-            except IndexError as e:
+            except IndexError:
                 log('ERR:', line, line.strip().split(sep))
                 raise
             doc[label] = value
@@ -400,6 +412,7 @@ class Corpus:
             typing.List[typing.Tuple[Word]]: Edges in the sentence
         """                                     
         edges = []
+        skip_edges = []
         triplets_obj = []
         triplets_nsubj = []
         for w in sentence.words:
@@ -413,6 +426,7 @@ class Corpus:
             if p.head == 0: 
                 continue
             q = sentence.words[p.head-1]
+            skip_edges += [(Word(w.text, w.upos), Word(q.text, q.upos))]
 
             if (w.upos, p.upos, q.upos) == triple:
                 if p.deprel in ('obj',):
@@ -420,7 +434,7 @@ class Corpus:
                 if p.deprel in ('nsubj', 'nsubj:pass'):
                     triplets_nsubj += [(Word(q.text, q.upos), Word(w.text, w.upos), Word(p.text, p.upos))]
 
-        return edges, triplets_obj, triplets_nsubj
+        return edges, skip_edges, triplets_obj, triplets_nsubj
 
  
     ################################################################ 
