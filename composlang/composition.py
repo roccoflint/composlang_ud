@@ -193,17 +193,26 @@ class CompositionAnalysis:
             self.parent_df[f'{column_name}_ceilinged'] = self.parent_df[f'{column_name}'] / np.log2(parent_norm_denom)
             self.child_df[f'{column_name}_ceilinged'] = self.child_df[f'{column_name}'] / np.log2(child_norm_denom)
 
-        # parent_norm_denom = (parent_norm_mask * matrix.shape[0]) | 1
-        # child_norm_denom = (child_norm_mask * matrix.shape[1]) | 1
-        
-        parent_norm_mask = (self.parent_token_stats.freq < matrix.shape[0])
-        child_norm_mask = (self.child_token_stats.freq < matrix.shape[1])
 
-        parent_norm_denom = (parent_norm_mask * self.parent_token_stats.freq) + (~parent_norm_mask * matrix.shape[0])
-        child_norm_denom = (child_norm_mask * self.child_token_stats.freq) + (~child_norm_mask * matrix.shape[1])
+    def compute_pmi(self):
+        '''
+        '''
+        # we will have a PMI value per pair
+        for key, stat_df in (('pmi', self.pair_df), 
+                             ('skip_pmi', self.skip_pair_df)
+                            ):
+            if key in self.child_df and key in self.parent_df:
+                continue
 
-        self.parent_token_stats['entropy_ceilinged'] = self.parent_token_stats['entropy'] / np.log2(parent_norm_denom)
-        self.child_token_stats['entropy_ceilinged'] = self.child_token_stats['entropy'] / np.log2(child_norm_denom)
+            pmi = []
+            for i, (w, p, (w, p), ct) in tqdm(stat_df.iterrows(), total=len(stat_df), desc=f'processing {key}'):
+                p_given_w_ct = np.log2(ct) 
+                p_ct = np.log2(self.token_stats[p])
+                w_ct = np.log2(self.token_stats[w])
+                pmi_w_p = (p_given_w_ct - w_ct) - (p_ct - np.log2(self.n_tokens))
+                pmi += [pmi_w_p]
+
+            stat_df[key] = pmi
 
 
     def bipartite_layout(self):
