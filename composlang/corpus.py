@@ -102,7 +102,7 @@ class Corpus:
         self._close_cache()
 
     def __repr__(self) -> str:
-        s = f'<{self.__class__.__name__}; sentences_seen={self._sentences_seen}; tokens={len(self.token_stats):,}>'
+        s = f'<{self.__class__.__name__}; sentences_seen={self._sentences_seen:,}; tokens={len(self.token_stats):,}>'
         return s
 
     ################################################################ 
@@ -181,7 +181,7 @@ class Corpus:
                       ('_token_stats', Counter), 
                       ('_pair_stats', Counter),
                       ('_skip_pair_stats', Counter),
-                      ('_triplet_stats', Counter), 
+                      ('_triplet_stats', dict), 
 
                       ('_files', lambda: None), ('_total', lambda: None), 
                       ('_n_sentences', lambda: None))
@@ -489,33 +489,52 @@ class ChainedCorpus(Corpus):
                  fmt: typing.List[str] = ('sentence_id:int', 'text:str',
                                           'lemma:str', 'id:int', 'head:int',
                                           'upos:str', 'deprel:str'),
-                 sep: str = '\t', lowercase: bool = True):
+                 sep: str = '\t', lowercase: bool = True,
+                 load=True):
 
+        self._cache_dir = cache_dir
+        self._cache_tag = cache_tag
+        self._directory_or_filelist = directory_or_filelist
+        if load: self.load_cache()
+
+
+    def load_cache(self, directory_or_filelist=None):
         # store Corpus objects initialized from cache files in a list
-        corpus_objs = []
+        # corpus_objs = []
+        directory_or_filelist = directory_or_filelist or self._directory_or_filelist
         for path in iterable_from_directory_or_filelist(directory_or_filelist):
             c = Corpus.from_cache(path)
-            corpus_objs += [c]
+            # corpus_objs += [c]
+            # we want to aggregate statistics of subparts using their cached objects
+            for attr, typ in self._attrs_to_cache:
+                if typ in (int, Counter):
+                    # choose the appropriate add function according to class
+                    redfn = getattr(typ, '__add__')
+                    # construct the reduced (aggregated) object, an int or a Counter, to assign to self
+                    reduce_operand = [getattr(c, attr)]
+                    if hasattr(self, attr) and type(getattr(self, attr)) == typ:
+                        reduce_operand += [getattr(self, attr)]
+                    ob = reduce(redfn, reduce_operand)
+                    setattr(self, attr, ob)
 
-        # we want to aggregate statistics of subparts using their cached objects
-        for attr, typ in self._attrs_to_cache:
-            if typ in (int, Counter):
-                # choose the appropriate add function according to class
-                redfn = getattr(typ, '__add__')
-                # construct the reduced (aggregated) object, an int or a Counter, to assign to self
-                ob = reduce(redfn, [getattr(c, attr) for c in corpus_objs])
-                setattr(self, attr, ob)
-
-        # close connection to SQLite after done loading
-        for c in corpus_objs:
+            # close connection to SQLite after done loading
             c._close_cache()
 
+            if self._cache_dir is not None and self._cache_tag is not None:
+                log(f'caching {self}')
+                self.to_cache(cache_dir=self._cache_dir, cache_tag=self._cache_tag)
 
     def _get_cache(self, cache_dir, cache_tag):
         return super()._get_cache(cache_dir, cache_tag)
-    def load_cache(self, allow_empty=True):
-        raise NotImplementedError
-    def to_cache(self, cache_dir, cache_tag):
+    # def load_cache(self, allow_empty=True):
+    #     raise NotImplementedError
+    def to_cache(self, cache_dir=None, cache_tag=None):
+        
+        if cache_dir is not None:
+            self._cache_dir = cache_dir
+        if cache_tag is not None:
+            self._cache_tag = cache_tag
+            
         if self.cache is None:
-            self.cache = self._get_cache(cache_dir, cache_tag)
+            self.cache = self._get_cache(self._cache_dir, self._cache_tag)
         super().to_cache()
