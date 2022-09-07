@@ -135,3 +135,5 @@ cache/
 *.bak
 composlang.code-workspace
 *.out
+
+output_of_stanza*
