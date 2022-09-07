@@ -86,7 +86,8 @@ class CompositionAnalysis:
             setattr(self, attr, obj)
 
 
-    def generate_adjacency_matrix(self, skip=False, stat='freq'):
+    def generate_adjacency_matrix(self, skip=False, stat='freq', top=None,
+                                  threshold=1):
         """Generates an adjacency matrix with shape (n_child_tokens, n_parent_tokens),
             with the i,j element representing the count of child[i], parent[j] occurring
             together
@@ -97,8 +98,8 @@ class CompositionAnalysis:
         if self.matrix is not None:
             return self.matrix
 
-        child_tokens = self.child_df['token']
-        parent_tokens = self.parent_df['token'] 
+        child_tokens = self.child_df['token'].iloc[:top]
+        parent_tokens = self.parent_df['token'].iloc[:top]
 
         child_to_ix = {token: ix for ix, token in enumerate(child_tokens)}
         parent_to_ix = {token: ix for ix, token in enumerate(parent_tokens)}
@@ -108,8 +109,10 @@ class CompositionAnalysis:
         # matrix[:, i] -> distribution over all child tokens for ith parent token 
         matrix = np.zeros((len(child_tokens), len(parent_tokens)))
 
-        it = self.skip_pair_df.iterrows() if skip else self.pair_df.iterrows()
-        total = len(self.skip_pair_df) if skip else len(self.pair_df)
+        view = (self.skip_pair_df if skip else self.pair_df) #.sort_values(stat).iloc[:top]
+        view = view[view[stat] > threshold]
+        it = view.iterrows() 
+        total = len(view)
         for _, row in tqdm(it, total=total, desc='constructing adjacency matrix'):
             # if cu == self.child_upos and pu == self.parent_upos:
             c, p, value = row[['child', 'parent', stat]]
@@ -117,11 +120,12 @@ class CompositionAnalysis:
                 cix = child_to_ix[c]
                 pix = parent_to_ix[p]
             except KeyError:
-                print(c,p,value)
+                # print(c,p,value)
+                continue
             matrix[cix, pix] = value
 
-        self.matrix = matrix
-        return self.matrix
+        # self.matrix = matrix
+        return matrix
 
 
     def compute_combinations(self) -> None: 
@@ -231,11 +235,18 @@ class CompositionAnalysis:
 
     def generate_combinations(self, min_freq=2, n=100):
         
-        C = self.child_token_stats[self.child_token_stats.freq >= min_freq].token.sample(n)
-        P = self.parent_token_stats[self.parent_token_stats.freq >= min_freq].token.sample(n)
+        C = self.child_df[self.child_df.freq >= min_freq].sample(n, replace=True)
+        P = self.parent_df[self.parent_df.freq >= min_freq].sample(n, replace=True)
 
         samples = []
-        for c, p in zip(C, P):
-            pair = (c, self.child_upos), (p, self.parent_upos)
-            samples.append(((c, p), self.pair_stats[pair]))
+        for rowC, rowP in tqdm(zip([row for i,row in C.iterrows()], 
+                                   [row for i,row in P.iterrows()]), total=len(C)):
+            # print(rowC, rowP)
+            colnames = ['token', 'freq', 'combinations']
+            c,cfreq,ccomb = rowC[colnames]
+            p,pfreq,pcomb = rowP[colnames]
+            f = self.pair_df[self.pair_df['pair'] == str((c, p))]['freq']
+            # pair = (c, self.child_upos), (p, self.parent_upos)
+            # samples.append(((c, p), self.pair_df[self.pair_df['pair'] == (c,p)]['freq']))
+            samples.append((c, cfreq, ccomb, p, pfreq, pcomb, f))
         return samples

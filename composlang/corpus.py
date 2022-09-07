@@ -5,12 +5,13 @@ import typing
 from collections import Counter, defaultdict
 from functools import cached_property, reduce
 from pathlib import Path
+import shutil
 
 # installed packages
 import numpy as np
 from joblib import Parallel, delayed
 from more_itertools import peekable
-from sqlitedict import SqliteDict
+from sqlitedict import SqliteDict, sqlite3
 from tqdm.auto import tqdm
 
 # local module
@@ -204,17 +205,36 @@ class Corpus:
         end = time.process_time()
         log(f'successfully loaded cached data from {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds')
 
-    def to_cache(self):
+    def to_cache(self, backup=True):
         '''
         dump critical state data of this instance to cache
         '''
         log(f'caching to {self._cache_dir}/{self._cache_tag}')
         start = time.process_time()
-        for attr, _ in self._attrs_to_cache:
-            obj = getattr(self, attr)
-            self.cache[attr] = obj
 
-        self.cache.commit()
+        def attempt_db_commit():
+            for attr, _ in self._attrs_to_cache:
+                obj = getattr(self, attr)
+                self.cache[attr] = obj
+            self.cache.commit()
+
+        src = Path(self.cache.filename)
+        dst = Path(str(src) + '.bak')
+        shutil.copy(src, dst)
+
+        retries = 2
+        while (retries := retries-1) + 1 > 0:
+            try:
+                attempt_db_commit()
+            except sqlite3.InterfaceError as e:
+                log('ERR: failed to write to db')
+                shutil.copy(dst, src)
+                continue
+            else:
+                break
+        if retries == -1:
+            raise RuntimeError(f'sqlitedb {self.cache.filename} failed at runtime')
+        
         end = time.process_time()
         log(f'successfully cached to {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds')
 
