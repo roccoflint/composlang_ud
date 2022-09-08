@@ -6,8 +6,9 @@ from sqlitedict import SqliteDict
 
 
 class CacheWrapper:
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
+    def __init__(self, path: Path, flag=None) -> None:
+        # filename included for compatibility with SqliteDict
+        self.filename = self.path = Path(path)
 
     @abstractmethod
     def commit(self):
@@ -20,12 +21,12 @@ class CacheWrapper:
 class PickleCache(CacheWrapper):
     d = None
 
-    def __init__(self, path: Path) -> None:
-        super().__init__()
+    def __init__(self, path: Path, flag=None) -> None:
+        super().__init__(path, flag)
         self.d = dict()
 
     def __getitem__(self, key):
-        return self.d.get(key)
+        return self.d[key]
 
     def __setitem__(self, key, value):
         self.d[key] = value
