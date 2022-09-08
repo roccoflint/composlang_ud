@@ -22,5 +22,5 @@ else
     conda activate composlang
 
     set -x
-    python -m composlang --path "$file" --tag "${tag}.db" --cache_dir cache/skip_plus_triplets_batched_lowercase --batch_size 5_000
+    python -m composlang --path "$file" --tag "${tag}.pkl" --cache_dir cache/skip_batched_lowercase --batch_size 5_000
 fi
