@@ -206,7 +206,7 @@ class Corpus:
         ("_token_stats", Counter),
         ("_pair_stats", Counter),
         ("_skip_pair_stats", Counter),
-        ("_triplet_stats", dict),
+        # ("_triplet_stats", dict),
         ("_files", lambda: None),
         ("_total", lambda: None),
         ("_n_sentences", lambda: None),
@@ -426,8 +426,8 @@ class Corpus:
             self._token_stats.update(token_stat)
             self._pair_stats.update(pair_stat)
             self._skip_pair_stats.update(skip_pair_stat)
-            self._triplet_stats["obj"].update(triplet_stat_obj)
-            self._triplet_stats["nsubj"].update(triplet_stat_nsubj)
+            # self._triplet_stats["obj"].update(triplet_stat_obj)
+            # self._triplet_stats["nsubj"].update(triplet_stat_nsubj)
 
     @classmethod
     def _digest_sentence(
