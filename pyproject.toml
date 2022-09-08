@@ -23,6 +23,7 @@ sklearn = "^0.0"
 nltk = "^3.7"
 seaborn = "^0.11.2"
 transformers = "4.11.3"
+coclust = {path = "cclust_package"}
 
 [tool.poetry.dev-dependencies]
 jupyter = "^1.0.0"
