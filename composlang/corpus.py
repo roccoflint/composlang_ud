@@ -246,24 +246,9 @@ class Corpus:
                 obj = getattr(self, attr)
                 self.cache[attr] = obj
             self.cache.commit()
-
-        src = Path(self.cache.filename)
-        dst = Path(str(src) + ".bak")
-        shutil.copy(src, dst)
-
-        retries = 2
-        while (retries := retries - 1) + 1 > 0:
-            try:
-                attempt_db_commit()
-            except sqlite3.InterfaceError as e:
-                log("ERR: failed to write to db")
-                shutil.copy(dst, src)
-                continue
-            else:
-                break
-        if retries == -1:
-            raise RuntimeError(f"sqlitedb {self.cache.filename} failed at runtime")
-
+        
+        attempt_db_commit()
+        
         end = time.process_time()
         log(
             f"successfully cached to {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds"
@@ -286,7 +271,7 @@ class Corpus:
         """
         from stanza.models.common.doc import Document
 
-        dummy_line = lambda: f'{"__EOF__"}{self._sep}' + self._sep.join(
+        dummy_line = lambda: f'{"-1"}{self._sep}' + self._sep.join(
             map(str, range(6 + 10))
         )
         # if we are resuming from previous state, we want to skip lines that are already processed.
