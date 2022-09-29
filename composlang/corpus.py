@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 from composlang.graph import WordGraph
 from composlang.utils import iterable_from_directory_or_filelist, log, pathify
 from composlang.word import Word
-from composlang.cache import PickleCache, SQLiteCache
+from composlang.cache import PickleCache, SQLiteCache, YAMLCache, CacheWrapper
 
 
 class Corpus:
@@ -108,9 +108,28 @@ class Corpus:
         lowercase=None,
     ):
         path = pathify(cache_file)
+        suffix = path.suffix
+        cache_cls = (
+            suffix_to_cache_cls_map := {
+                ".db": SQLiteCache,
+                ".yml": YAMLCache,
+                ".yaml": YAMLCache,
+                ".pkl": PickleCache,
+            }
+        ).get(suffix, PickleCache)
+
         cache_dir = path.parent
         cache_tag = path.parts[-1]
-        return cls("/dev/null", cache_dir, cache_tag, n_sentences, fmt, sep, lowercase)
+        return cls(
+            "/dev/null",
+            cache_dir=cache_dir,
+            cache_tag=cache_tag,
+            cache_cls=cache_cls,
+            n_sentences=n_sentences,
+            fmt=fmt,
+            sep=sep,
+            lowercase=lowercase,
+        )
 
     def __len__(self) -> int:
         return self._sentences_seen
@@ -184,7 +203,7 @@ class Corpus:
 
     def _get_cache(self, prefix=None, tag=None):
         """
-        creates and returns an SqliteDict() object
+        creates and returns a `CacheWrapper` object
         """
         tag = tag or self._cache_tag
         if tag is None:
@@ -212,16 +231,18 @@ class Corpus:
         ("_n_sentences", lambda: None),
     )
 
-    def load_cache(self, allow_empty=True):
+    def load_cache(self, allow_empty=True, silent=True):
         """
         recover core data of this instance from cache
         """
-        log(f"attempt loading from cache at {self._cache_dir}/{self._cache_tag}")
+        if not silent:
+            log(f"attempt loading from cache at {self._cache_dir}/{self._cache_tag}")
         start = time.process_time()
         for attr, default in tqdm(
             self._attrs_to_cache, desc="loading key-value pairs from cache"
         ):
-            print(f"{attr}", end=" ")
+            if not silent:
+                print(f"{attr}", end=" ")
             try:
                 obj = self.cache[attr]
                 setattr(self, attr, obj)
@@ -230,9 +251,10 @@ class Corpus:
                 if not allow_empty:
                     raise e
         end = time.process_time()
-        log(
-            f"successfully loaded cached data from {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds"
-        )
+        if not silent:
+            log(
+                f"successfully loaded cached data from {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds"
+            )
 
     def to_cache(self, backup=True):
         """
@@ -246,9 +268,9 @@ class Corpus:
                 obj = getattr(self, attr)
                 self.cache[attr] = obj
             self.cache.commit()
-        
+
         attempt_db_commit()
-        
+
         end = time.process_time()
         log(
             f"successfully cached to {self._cache_dir}/{self._cache_tag} in {end-start:.3f} seconds"
@@ -588,6 +610,7 @@ class ChainedCorpus(Corpus):
         ],
         cache_dir=None,
         cache_tag=None,
+        cache_cls=YAMLCache,
         fmt: typing.List[str] = (
             "sentence_id:int",
             "text:str",
@@ -604,6 +627,7 @@ class ChainedCorpus(Corpus):
 
         self._cache_dir = cache_dir
         self._cache_tag = cache_tag
+        self._cache_cls = cache_cls
         self._directory_or_filelist = directory_or_filelist
         if load:
             self.load_cache()
@@ -612,7 +636,11 @@ class ChainedCorpus(Corpus):
         # store Corpus objects initialized from cache files in a list
         # corpus_objs = []
         directory_or_filelist = directory_or_filelist or self._directory_or_filelist
-        for path in iterable_from_directory_or_filelist(directory_or_filelist):
+        for path in tqdm(
+            iterable_from_directory_or_filelist(directory_or_filelist),
+            desc="constructing ChainedCorpus from cached Corpus files",
+        ):
+            log(path)
             c = Corpus.from_cache(path)
             # corpus_objs += [c]
             # we want to aggregate statistics of subparts using their cached objects
@@ -628,7 +656,8 @@ class ChainedCorpus(Corpus):
                     setattr(self, attr, ob)
 
             # close connection to SQLite after done loading
-            c._close_cache()
+            if c._cache_cls == SQLiteCache:
+                c._close_cache()
 
             if self._cache_dir is not None and self._cache_tag is not None:
                 log(f"caching {self}")
