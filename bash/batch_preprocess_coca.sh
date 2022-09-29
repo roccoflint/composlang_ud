@@ -1,10 +1,10 @@
 #!/bin/bash                                                                 
-#SBATCH -c 6
+#SBATCH -c 4
 #SBATCH -t 72:00:00
 #SBATCH --mem=10G
 #SBATCH -p evlab
 #SBATCH -n 1
-#SBATCH --array=1-200%200
+#SBATCH --array=1-200%10
 #SBATCH -o logs/slurm.%A-%a.out # STDOUT
 
 count=$(find COCA/output_of_stanza_0* -maxdepth 1 -type f|wc -l)
@@ -22,5 +22,5 @@ else
     conda activate composlang
 
     set -x
-    python -m composlang --path "$file" --tag "${tag}.pkl" --cache_dir cache/skip_batched_lowercase --batch_size 5_000
+    python -m composlang --path "$file" --tag "${tag}.pkl" --cache_dir cache/skip_batched_lowercase_pickle --batch_size 5_000
 fi
