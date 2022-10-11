@@ -285,10 +285,34 @@ class CompositionAnalysis:
         items = list((T, ct) for T, ct in self.pair_stats.items())
         return random.choices(items, k=n)
 
-    def generate_combinations(self, min_freq=2, n=100):
+    def generate_combinations(self, min_freq=1, n=100, use_freq_as_weights=True):
+        """Generates `n` Adj x Noun combinations by independently sampling Adj and Noun `n` times
+            with replacement.  By default, sampling is true to the observed Adj and Noun
+            distributions, so will be approximately Zipfian, but turning this off using
+            `use_freq_as_weights` results in sampling Adjs and Nouns uniformly, leading to many more
+            unattested and low-frequency pairings.
 
-        C = self.child_df[self.child_df.freq >= min_freq].sample(n, replace=True)
-        P = self.parent_df[self.parent_df.freq >= min_freq].sample(n, replace=True)
+        Args:
+            min_freq (int, optional): Whether to only sample above a certain frequency for
+                individual Adjs and Nouns. Defaults to 1.
+            n (int, optional): Number of combinations to produce. Defaults to 100.
+            use_freq_as_weights (bool, optional): Whether sampling should be faithful to observed distribution
+                over individual lexical items.  If False, a uniform prior over lexical items is
+                assumed. Defaults to True.
+
+        Returns:
+            list: A list of generated combinations
+        """
+        if use_freq_as_weights:
+            C = self.child_df[self.child_df.freq >= min_freq].sample(
+                n, replace=True, weights="freq"
+            )
+            P = self.parent_df[self.parent_df.freq >= min_freq].sample(
+                n, replace=True, weights="freq"
+            )
+        else:
+            C = self.child_df[self.child_df.freq >= min_freq].sample(n, replace=True)
+            P = self.parent_df[self.parent_df.freq >= min_freq].sample(n, replace=True)
 
         samples = []
         for rowC, rowP in tqdm(
@@ -299,8 +323,21 @@ class CompositionAnalysis:
             colnames = ["token", "freq", "combinations"]
             c, cfreq, ccomb = rowC[colnames]
             p, pfreq, pcomb = rowP[colnames]
-            f = self.pair_df[self.pair_df["pair"] == str((c, p))]["freq"]
+            try:
+                f = self.pair_df[self.pair_df["pair"] == str((c, p))]["freq"].item()
+            except ValueError:
+                f = 0
             # pair = (c, self.child_upos), (p, self.parent_upos)
             # samples.append(((c, p), self.pair_df[self.pair_df['pair'] == (c,p)]['freq']))
-            samples.append((c, cfreq, ccomb, p, pfreq, pcomb, f))
+            samples.append(
+                dict(
+                    child=c,
+                    childfreq=cfreq,
+                    childcombs=ccomb,
+                    parent=p,
+                    parentfreq=pfreq,
+                    parentcombs=pcomb,
+                    pairfreq=f,
+                )
+            )
         return samples
