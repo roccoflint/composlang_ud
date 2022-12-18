@@ -122,7 +122,7 @@ class CompositionAnalysis:
             )
             setattr(self, attr, obj)
 
-    def generate_adjacency_matrix(self, skip=False, stat="freq", top=None, threshold=1):
+    def generate_adjacency_matrix(self, skip=False, stat="freq", top=None, threshold=0):
         """Generates an adjacency matrix with shape (n_child_tokens, n_parent_tokens),
             with the i,j element representing the count of child[i], parent[j] occurring
             together
@@ -285,7 +285,9 @@ class CompositionAnalysis:
         items = list((T, ct) for T, ct in self.pair_stats.items())
         return random.choices(items, k=n)
 
-    def generate_combinations(self, min_freq=1, n=100, use_freq_as_weights=True):
+    def generate_combinations(
+        self, min_freq=1, n=100, use_freq_as_weights=True, seed=42
+    ):
         """Generates `n` Adj x Noun combinations by independently sampling Adj and Noun `n` times
             with replacement.  By default, sampling is true to the observed Adj and Noun
             distributions, so will be approximately Zipfian, but turning this off using
@@ -305,14 +307,18 @@ class CompositionAnalysis:
         """
         if use_freq_as_weights:
             C = self.child_df[self.child_df.freq >= min_freq].sample(
-                n, replace=True, weights="freq"
+                n, replace=True, weights="freq", random_state=seed
             )
             P = self.parent_df[self.parent_df.freq >= min_freq].sample(
-                n, replace=True, weights="freq"
+                n, replace=True, weights="freq", random_state=seed
             )
         else:
-            C = self.child_df[self.child_df.freq >= min_freq].sample(n, replace=True)
-            P = self.parent_df[self.parent_df.freq >= min_freq].sample(n, replace=True)
+            C = self.child_df[self.child_df.freq >= min_freq].sample(
+                n, replace=True, random_state=seed
+            )
+            P = self.parent_df[self.parent_df.freq >= min_freq].sample(
+                n, replace=True, random_state=seed
+            )
 
         samples = []
         for rowC, rowP in tqdm(
@@ -323,10 +329,12 @@ class CompositionAnalysis:
             colnames = ["token", "freq", "combinations"]
             c, cfreq, ccomb = rowC[colnames]
             p, pfreq, pcomb = rowP[colnames]
-            try:
-                f = self.pair_df[self.pair_df["pair"] == str((c, p))]["freq"].item()
-            except ValueError:
-                f = 0
+
+            freq = self.pair_stats[c, p]
+            # try:
+            #     f = self.pair_df[self.pair_df["pair"] == str((c, p))]["freq"].item()
+            # except ValueError:
+            #     f = 0
             # pair = (c, self.child_upos), (p, self.parent_upos)
             # samples.append(((c, p), self.pair_df[self.pair_df['pair'] == (c,p)]['freq']))
             samples.append(
@@ -337,7 +345,7 @@ class CompositionAnalysis:
                     parent=p,
                     parentfreq=pfreq,
                     parentcombs=pcomb,
-                    pairfreq=f,
+                    pairfreq=freq,
                 )
             )
         return samples
