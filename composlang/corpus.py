@@ -517,7 +517,7 @@ class Corpus:
             if w.head == 0:
                 continue
             p = sentence.words[w.head - 1]
-            edges += [(Word(w.text, w.upos), Word(p.text, p.upos))]
+            edges += [(Word(w.text, w.upos), Word(p.text, p.upos), p.deprel)]
 
             # this is to additionally extract the VERB
             if p.head == 0:
