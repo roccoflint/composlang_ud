@@ -523,7 +523,7 @@ class Corpus:
             if p.head == 0:
                 continue
             q = sentence.words[p.head - 1]
-            skip_edges += [(Word(w.text, w.upos), Word(q.text, q.upos))]
+            skip_edges += [(Word(w.text, w.upos), Word(q.text, q.upos), p.deprel)]
 
             if (w.upos, p.upos, q.upos) == triple:
                 if p.deprel in ("obj",):
