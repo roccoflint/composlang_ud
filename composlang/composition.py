@@ -76,15 +76,15 @@ class CompositionAnalysis:
         # pair-related stuff
         self.pair_stats = Counter(
             {
-                (c, p): ct
-                for ((c, cu), (p, pu)), ct in corpus.pair_stats.items()
+                (c, p, deprel): ct
+                for ((c, cu), (p, pu), deprel), ct in corpus.pair_stats.items()
                 if cu == child_upos and pu == parent_upos
             }
         )
         self.pair_df = pd.DataFrame(
             [
-                dict(child=c, parent=p, pair=(c, p), freq=ct)
-                for (c, p), ct in self.pair_stats.items()
+                dict(child=c, parent=p, pair=(c, p), freq=ct, deprel=deprel)
+                for (c, p, deprel), ct in self.pair_stats.items()
             ]
         ).sort_values("freq", ascending=False, ignore_index=True)
 
