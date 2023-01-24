@@ -1,8 +1,11 @@
 import typing
 from pathlib import Path
 import json
+from tqdm.auto import tqdm
 
 import pandas as pd
+
+BASEDIR = "web/results/"
 
 
 def process_subject(path: typing.Union[str, Path]):
@@ -55,7 +58,7 @@ def process_subject(path: typing.Union[str, Path]):
 
 
 def find_subject(
-    subject_id, basedir=Path("real-deal/").expanduser().resolve(), search_all=True
+    subject_id, basedir=Path(BASEDIR).expanduser().resolve(), search_all=True
 ):
     processed = []
     for path in basedir.glob("*.json"):
@@ -72,15 +75,21 @@ def find_subject(
     raise FileNotFoundError(f"no response for subject `{subject_id}` at `{basedir}`")
 
 
-def compile_data(basedir="real-deal/"):
+def compile_data(basedir=BASEDIR):
     basedir = Path(basedir).expanduser().resolve()
     glob = [*basedir.glob("*.json")]
-    df = pd.concat(process_subject(sub) for sub in glob).reset_index(drop=True)
+    df = pd.concat(
+        process_subject(sub) for sub in tqdm(glob, desc="subjects")
+    ).reset_index(drop=True)
 
     subject_to_ix = {}  # dict((item, i) for i, item in enumerate(set(df.subject_id)))
     # item_to_ix = dict((item, i) for i, item in enumerate(set(df.item)))
     item_to_ix = {}
-    for i, row in df[["item", "trial_type", "subject_id"]].iterrows():
+    for i, row in tqdm(
+        df[["item", "trial_type", "subject_id"]].iterrows(),
+        total=len(df),
+        desc="individual trials",
+    ):
         item = row["item"]
         tt = row["trial_type"]
         sub = row["subject_id"]
