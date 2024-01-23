@@ -10,7 +10,7 @@ BASEDIR = "web/results/"
 
 def process_subject(path: typing.Union[str, Path]):
     """
-    given a path to a jspsych experiment saved data, processes the subject to extract a
+    given a path to a jspsych experiment output file (json), processes the subject to extract a
     dataframe with only relevant information retaiend and properly organized
     """
     with Path(path).open("r") as f:
