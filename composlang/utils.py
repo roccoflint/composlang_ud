@@ -50,7 +50,6 @@ def ECDF_transform(a):
 def get_llm_results(
     model: str,
     study: str,
-    paradigm: str,
     basedir: Path = Path("./llm-results/"),
     adj_freq: typing.Dict[str, int] = None,
     noun_freq: typing.Dict[str, int] = None,
@@ -61,21 +60,33 @@ def get_llm_results(
     import numpy as np
     from functools import reduce
 
-    log(model, study, paradigm)
-    assert all(x is not None for x in (adj_freq, noun_freq, pair_freq))
+    # log(model, study, paradigm)
+    assert all(
+        x is not None for x in (adj_freq, noun_freq, pair_freq)
+    ), "missing frequency data"
 
     [resultsdir] = (basedir / study).glob("benchmark-cfg=*")
-    results = list(resultsdir.glob(f"eval={paradigm}*/model={model}/results.csv"))
-    if paradigm == "logprobs":
-        results = [pd.read_csv(r, index_col=0) for r in results]
-    elif paradigm == "likert":
-        results_acc = []
-        for r_path in results:
-            r = pd.read_csv(r_path, index_col=0)
-            likert_kind = r.parts[3].split("=")[1]
-            r.rename(columns={"text_likert_noun_adjective": likert_kind}, inplace=True)
-            results_acc.append(r)
-        results = results_acc
+
+    results = []
+    for paradigm in ["logprobs", "likert"]:
+        results_csvs = list(resultsdir.glob(f"eval={paradigm}*/model={model}/*.csv"))
+        if paradigm == "logprobs":
+            results_paradigm = [
+                pd.read_csv(r_path, index_col=0) for r_path in results_csvs
+            ]
+        elif paradigm == "likert":
+            results_paradigm = []
+            for r_path in results_csvs:
+                r = pd.read_csv(r_path, index_col=0)
+                likert_kind = r_path.parts[3].split("=")[1]
+                r.rename(
+                    columns={"text_likert_noun_adjective": likert_kind}, inplace=True
+                )
+                results_paradigm.append(r)
+        else:
+            raise ValueError(f"Unrecognized paradigm: {paradigm}")
+
+        results += results_paradigm
 
     if len(results) > 1:
         results = reduce(pd.merge, results)
@@ -84,14 +95,20 @@ def get_llm_results(
     else:
         raise ValueError(f"Found {len(results)} results")
 
-    if paradigm == "likert":
-        model_columns = ["text_likert_noun_adjective"]
-
-    if paradigm == "logprobs":
-        model_columns = ["logp_A", "logp_N", "logp_N_A", "logp_AN"]
+    # any column header that is the result of model outputs
+    model_columns = [
+        "likert_constrained_original",
+        "likert_constrained_optimized",
+        "logp_A",
+        "logp_N",
+        "logp_N_A",
+        "logp_AN",
+    ]
 
     metadata_columns = results.columns.difference(model_columns)
 
+    # construct multiindex to dilineate between metadata and model columns
+    # SIDE-NOTE: WHY is this necessary? there is no overlap in the kinds of data across the two
     mii = pd.MultiIndex.from_tuples(
         tuples=[("metadata", c) for c in results.columns if c in metadata_columns]
         + [("model", c) for c in results.columns if c in model_columns],
@@ -100,6 +117,7 @@ def get_llm_results(
     results.columns = mii
     results["metadata", "model"] = model
 
+    # these are frequencies provided independently, calculated using some corpus (e.g. COCA)
     results["metadata", "adj_freq"] = (
         results["metadata", "adjective"].apply(str.lower).map(adj_freq)
     )
@@ -127,5 +145,8 @@ def get_llm_results(
                     results["metadata", "adj_freq"] / sum(adj_freq.values())
                 )
                 results["model", f"corpus_{col}"] = hybrid_p
+    if paradigm == "likert":
+        for col in ["likert_constrained_original", "likert_constrained_optimized"]:
+            results["model", f"{col}"] -= 4
 
     return results.sort_index(axis=1)
