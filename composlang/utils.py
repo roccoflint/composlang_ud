@@ -54,6 +54,7 @@ def get_llm_results(
     adj_freq: typing.Dict[str, int] = None,
     noun_freq: typing.Dict[str, int] = None,
     pair_freq: typing.Dict[typing.Tuple[str, str], int] = None,
+    multiindex: bool = False,
 ):
     """ """
     import pandas as pd
@@ -95,6 +96,10 @@ def get_llm_results(
     else:
         raise ValueError(f"Found {len(results)} results")
 
+    # exclude human study results from corpus study results
+    if study == "composlang":
+        results = results[(results["arank"] >= 0) & (results["nrank"] >= 0)]
+
     # any column header that is the result of model outputs
     model_columns = [
         "likert_constrained_original",
@@ -107,46 +112,62 @@ def get_llm_results(
 
     metadata_columns = results.columns.difference(model_columns)
 
+    if multiindex:
+        metadata_title = ["metadata"]
+        model_title = ["model"]
+    else:
+        metadata_title = []
+        model_title = []
     # construct multiindex to dilineate between metadata and model columns
     # SIDE-NOTE: WHY is this necessary? there is no overlap in the kinds of data across the two
-    mii = pd.MultiIndex.from_tuples(
-        tuples=[("metadata", c) for c in results.columns if c in metadata_columns]
-        + [("model", c) for c in results.columns if c in model_columns],
-        # names=levels,
-    )
-    results.columns = mii
-    results["metadata", "model"] = model
+    if multiindex:
+        raise NotImplementedError("multiindex not implemented")
+        mii = pd.MultiIndex.from_tuples(
+            tuples=[("metadata", c) for c in results.columns if c in metadata_columns]
+            + [("model", c) for c in results.columns if c in model_columns],
+            # names=levels,
+        )
+        results.columns = mii
+
+    results[("model")] = model
 
     # these are frequencies provided independently, calculated using some corpus (e.g. COCA)
-    results["metadata", "adj_freq"] = (
-        results["metadata", "adjective"].apply(str.lower).map(adj_freq)
+    results[("adj_freq")] = results[("adjective")].apply(str.lower).map(adj_freq)
+    results[("clogp_A")] = np.log((1 + results[("adj_freq")]) / sum(adj_freq.values()))
+
+    results[("noun_freq")] = results[("noun")].apply(str.lower).map(noun_freq)
+    results[("clogp_N")] = np.log(
+        (1 + results[("noun_freq")]) / sum(noun_freq.values())
     )
-    results["metadata", "noun_freq"] = (
-        results["metadata", "noun"].apply(str.lower).map(noun_freq)
-    )
-    results["metadata", "pair_freq"] = (
-        (results[("metadata", "adjective")] + " " + results[("metadata", "noun")])
+
+    results[("clogp_A*N")] = results[("clogp_N")] + results[("clogp_A")]
+
+    results[("pair_freq")] = (
+        (results[("adjective")] + " " + results[("noun")])
         .apply(str.lower)
         .map(pair_freq)
     )
     results.fillna(0, inplace=True)
 
-    if paradigm == "logprobs":
-        for col in ["logp_N_A", "logp_AN"]:
-            col = "logp_N_A"
-            ecdf = ECDF_transform(results["model", col])
-            results["model", f"ecdf_{col}"] = ecdf
+    # LOGPROBS
+    for col in ["logp_N_A", "logp_AN", "logp_A", "logp_N"]:
+        try:
+            ecdf = ECDF_transform(results[(col)])
+            results[(f"ecdf_{col}")] = ecdf
 
             if col == "logp_N_A":
-                conditionals = results["model", col]
+                conditionals = results[(col)]
                 # conditionals are in log space, and adj_freq is absolute counts.
                 # rescale to sum of counts of all adjs (not just those in the dataset)
-                hybrid_p = conditionals + np.log(
-                    results["metadata", "adj_freq"] / sum(adj_freq.values())
-                )
-                results["model", f"corpus_{col}"] = hybrid_p
-    if paradigm == "likert":
-        for col in ["likert_constrained_original", "likert_constrained_optimized"]:
-            results["model", f"{col}"] -= 4
+                results[(f"hybrid_{col}")] = conditionals + results["clogp_A"]
+        except KeyError:
+            log(f"could not find {col} in {model} x {study} results; skipping")
+
+    # LIKERT
+    for col in ["likert_constrained_original", "likert_constrained_optimized"]:
+        try:
+            results[(f"{col}")] -= 4
+        except KeyError:
+            log(f"could not find {col} in {model} x {study} results; skipping")
 
     return results.sort_index(axis=1)
