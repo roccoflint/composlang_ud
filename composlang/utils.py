@@ -216,9 +216,11 @@ def get_llm_results(
 
     # results[("clogp_N_A")] = results[("clogp_N")] + results[("clogp_A")]
 
-    results[("clogp_AN")] = (
-        (results[("adjective")] + " " + results[("noun")]).apply(str.lower).map(pair_p)
-    )
+    jt = (results[("adjective")] + " " + results[("noun")]).apply(str.lower).map(pair_p)
+    jt[jt.isna()] = -np.inf
+
+    results[("clogp_AN")] = jt
+
     # normalize the joint distribution so this subset sums to 1
     results["clogp_AN"] -= logsumexp(results["clogp_AN"])
     # results[("clogp_AN")] = np.log(
@@ -231,7 +233,7 @@ def get_llm_results(
         results["clogp_N_A"] = (
             (results[("adjective")] + " " + results[("noun")])
             .apply(str.lower)
-            .map(cond)
+            .map(lambda key: cond[key])
         )
 
     # in the realm of logprobs, we want -inf to fill in for missing values
