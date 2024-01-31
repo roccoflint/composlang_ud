@@ -137,7 +137,9 @@ class JointDist:
         returns the marginal distribution (one-dimensional) along the specified axis
         axis 0 corresponds to marginalizing  to get p(a)
         """
-        return self.joint.sum(axis=1 - axis)
+        from scipy.special import logsumexp
+
+        return logsumexp(self.joint, axis=1 - axis)
 
 
 def get_llm_results(
@@ -277,7 +279,8 @@ def compute_fit(
     target="pair_freq",
     outlier_pct=0,
     flip=False,
-    exp=True,
+    expy=False,
+    expx=True,
     normx=False,
     normy=False,
     logy=False,
@@ -297,8 +300,9 @@ def compute_fit(
         y = df[target]
     x = df[metric]
 
-    if exp:
+    if expx:
         x = np.exp(x)
+    if expy:
         y = np.exp(y)
     if normx:
         x = minmax(x)
