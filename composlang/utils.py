@@ -277,11 +277,10 @@ def compute_fit(
     target="pair_freq",
     outlier_pct=0,
     flip=False,
-    exp=False,
-    surp=False,
+    exp=True,
     normx=False,
     normy=False,
-    logy=True,
+    logy=False,
 ):
     import statsmodels.api as sm
     import numpy as np
@@ -298,15 +297,14 @@ def compute_fit(
         y = df[target]
     x = df[metric]
 
-    if surp:
-        x = -x
     if exp:
         x = np.exp(x)
+        y = np.exp(y)
     if normx:
-        x = (x - x.min()) / (x.max() - x.min())
+        x = minmax(x)
         # x /= abs(x.sum())
     if normy:
-        y = (y - y.min()) / (y.max() - y.min())
+        y = minmax(y)
         # y /= abs(y.sum())
     if flip:
         x, y = y, x
