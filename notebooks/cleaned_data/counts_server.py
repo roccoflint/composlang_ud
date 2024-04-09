@@ -65,8 +65,9 @@ class DictPersistJSON(dict):
 
 
 def initialize_stim_server(
-    STIMULI_LISTS: Path = "./stimuli.json",
-    database_name: str = "./counts-server-db.json",
+    STIMULI_LISTS: Path,
+    COUNTS_FILE: Path,
+    database_name: str,
 ) -> Flask:
     """
     Initializes the stimulus server.
@@ -85,7 +86,7 @@ def initialize_stim_server(
 
     STIMULI = {}
     COUNTS = {}
-    with open("./counts.yml", "r") as f, open("./stimuli.yml", "r") as s:
+    with open(COUNTS_FILE, "r") as f, open(STIMULI_LISTS, "r") as s:
         COUNTS = yaml.load(f, Loader=yaml.Loader)
         STIMULI = yaml.load(s, Loader=yaml.Loader)
 
@@ -93,7 +94,7 @@ def initialize_stim_server(
 
     ################################################################################
     # initialize the database from a file if it exists, else create a new one
-    # with all counts set to 0
+    # inheriting counts from COUNTS_FILE
     ################################################################################
     INIT_DB = lambda: DictPersistJSON(
         database_name, **{str(k): v for k, v in COUNTS.items()}
@@ -197,14 +198,22 @@ parser.add_argument(
     "--database_name",
     help="path to the database file",
     required=False,
-    default="./counts.yml",
+    default="/home/evlab/composlang/counts-server-db.json",
+)
+
+parser.add_argument(
+    "--counts",
+    help="path to the initial counts file",
+    required=False,
+    default="/home/evlab/composlang/counts.yml",
 )
 
 parser.add_argument(
     "--stimuli",
     help="path to the directory containing the stimuli CSV files, e.g. stims/{likert1, likert2, ...}.csv",
+    required=False,
     type=Path,
-    default="./stimuli.yml",
+    default="/home/evlab/composlang/stimuli.yml",
 )
 
 args = parser.parse_args()
@@ -212,6 +221,7 @@ args = parser.parse_args()
 print(args)
 app = application = initialize_stim_server(
     STIMULI_LISTS=args.stimuli,
+    COUNTS_FILE=args,
     database_name=args.database_name,
 )
 
