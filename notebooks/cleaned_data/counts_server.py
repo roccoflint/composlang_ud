@@ -221,7 +221,7 @@ args = parser.parse_args()
 print(args)
 app = application = initialize_stim_server(
     STIMULI_LISTS=args.stimuli,
-    COUNTS_FILE=args,
+    COUNTS_FILE=args.counts,
     database_name=args.database_name,
 )
 
